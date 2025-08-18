@@ -1,86 +1,80 @@
-# File: ui/main_window.py
-# Purpose: Main window with Ribbon, ProjectTree, and a central stacked module area. Hooks modules by name.
 
-from PySide2.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QStackedWidget, QMessageBox
-from PySide2.QtCore import Qt
+# =========================================
+# file: nikan_drill_master/ui/main_window.py
+# =========================================
+from __future__ import annotations
+from typing import Callable
+from PySide6.QtWidgets import QMainWindow, QWidget, QSplitter, QStackedWidget, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QVBoxLayout
+from PySide6.QtCore import Qt
+from sqlalchemy.orm import Session
+from database import session_scope
+from ui.styles import DARK, LIGHT
 from ui.widgets.ribbon import Ribbon
-from ui.widgets.tree_view import ProjectTree
-from modules.daily_report import DailyReportModule
-from modules.code_management import CodeManagementModule
-from modules.base import BaseModule
-
-# Import more modules progressively (will be defined in next parts)
-# from modules.well_info import WellInfoModule
-# ... (others will be added when provided)
+from ui.widgets.tree_view import HierarchyTree
+from modules.base import ModuleBase
+from modules import (
+    register_modules, MODULES,
+)
 
 class MainWindow(QMainWindow):
-    def __init__(self, db, parent=None):
+    def __init__(self, SessionLocal: Callable[[], Session], db_url: str, parent=None):
         super().__init__(parent)
-        self.db = db
+        self.SessionLocal = SessionLocal
+        self.db_url = db_url
         self.setWindowTitle("Nikan Drill Master")
-        self.resize(1300, 800)
+        self.resize(1400, 820)
 
         self.ribbon = Ribbon(self)
-        self.setMenuWidget(self.ribbon)
-
-        self.tree = ProjectTree(self.db, self)
         self.stack = QStackedWidget(self)
 
-        central = QWidget(self)
-        lay = QHBoxLayout(central)
-        lay.addWidget(self.tree, 2)
-        lay.addWidget(self.stack, 5)
-        self.setCentralWidget(central)
+        with session_scope(self.SessionLocal) as s:
+            self.tree = HierarchyTree(s)
 
-        self.modules = {}
-        self._build_modules()
-        self._wire()
+        self.tree.tree.itemSelectionChanged.connect(self._on_tree_selection)
 
-    def _build_modules(self):
-        # Core modules available now
-        self.add_module("Daily Report", DailyReportModule(self.db))
-        self.add_module("Code Management", CodeManagementModule(self.db))
-        # Placeholders for menu (will be connected later as we deliver them)
-        self.ribbon.add_group("Home", [
-            ("Well Info", self._todo),
-            ("Supervisor Signature", self._todo),
-            ("Preferences", self._todo),
-        ])
-        self.ribbon.add_group("Daily Ops", [
-            ("Daily Report", lambda: self.show_module("Daily Report")),
-            ("Work Summary", self._todo),
-            ("Alerts", self._todo),
-        ])
-        self.ribbon.add_group("Planning", [
-            ("Code Management", lambda: self.show_module("Code Management")),
-            ("Seven Days Lookahead", self._todo),
-            ("NPT Report", self._todo),
-        ])
-        self.ribbon.add_group("Export", [
-            ("Export Center", self._todo),
-        ])
+        self._modules_by_key: dict[str, ModuleBase] = {}
+        self._setup_modules()
 
-    def _todo(self):
-        QMessageBox.information(self, "Coming up", "This module is coming in the next batches.")
+        top = QWidget(self)
+        top_lay = QVBoxLayout(top)
+        top_lay.setContentsMargins(0,0,0,0)
+        top_lay.addWidget(self.ribbon)
 
-    def add_module(self, name: str, module: BaseModule):
-        self.modules[name] = module
-        self.stack.addWidget(module.get_widget())
+        splitter = QSplitter(Qt.Horizontal, self)
+        splitter.addWidget(self.tree)
+        splitter.addWidget(self.stack)
+        splitter.setStretchFactor(1, 1)
+        top_lay.addWidget(splitter)
 
-    def show_module(self, name: str):
-        mod = self.modules.get(name)
-        if not mod:
-            QMessageBox.warning(self, "Not found", f"Module {name} not registered")
-            return
-        self.stack.setCurrentWidget(mod.get_widget())
-        if hasattr(mod, "on_show"):
-            mod.on_show()
+        self.setCentralWidget(top)
+        self._apply_theme("dark")
 
-    def _wire(self):
-        self.tree.open_daily_report.connect(self._open_section_daily)
+    def _apply_theme(self, theme: str):
+        self.setStyleSheet(DARK if theme == "dark" else LIGHT)
 
-    def _open_section_daily(self, section_id: int):
-        # ensure the Daily Report module opens the right section/date
-        self.show_module("Daily Report")
-        mod = self.modules["Daily Report"]
-        mod.on_show(section_id=section_id)
+    def _setup_modules(self):
+        register_modules(self.SessionLocal)
+        for key, (title, factory) in MODULES.items():
+            mod = factory(self.SessionLocal)
+            self._modules_by_key[key] = mod
+            self.stack.addWidget(mod)
+            self.ribbon.add_action(key, title, callback=lambda _=False, k=key: self._activate_module(k))
+
+    def _activate_module(self, key: str):
+        mod = self._modules_by_key[key]
+        self.stack.setCurrentWidget(mod)
+        mod.on_activated(self._current_selection_payload())
+
+    def _current_selection_payload(self) -> dict:
+        item = self.tree.tree.currentItem()
+        if not item:
+            return {}
+        role = item.data(0, Qt.UserRole)
+        return {"selection": role}
+
+    def _on_tree_selection(self):
+        # sync current module if it relies on selection
+        w = self.stack.currentWidget()
+        if isinstance(w, ModuleBase):
+            w.on_selection_changed(self._current_selection_payload())

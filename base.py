@@ -1,18 +1,21 @@
-# File: modules/base.py
-# Purpose: Base class for all modules; each module exposes get_widget() and optional on_show(**ctx)
 
-from PySide2.QtWidgets import QWidget
+# =========================================
+# file: nikan_drill_master/modules/base.py
+# =========================================
+from __future__ import annotations
+from typing import Callable
+from PySide6.QtWidgets import QWidget
+from sqlalchemy.orm import Session
 
-class BaseModule:
-    DISPLAY_NAME = "Module"
+class ModuleBase(QWidget):
+    """چرا: الگوی مشترک برای همه ماژول‌ها (چرخه‌ی حیات و Session)"""
+    def __init__(self, SessionLocal: Callable[[], Session], parent=None):
+        super().__init__(parent)
+        self.SessionLocal = SessionLocal
 
-    def __init__(self, db, parent=None):
-        self.db = db
-        self.parent = parent
-        self.widget = QWidget()
+    # Hooks
+    def on_activated(self, context: dict) -> None:
+        pass
 
-    def get_widget(self) -> QWidget:
-        return self.widget
-
-    def on_show(self, **context):
+    def on_selection_changed(self, context: dict) -> None:
         pass

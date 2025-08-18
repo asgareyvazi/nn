@@ -1,72 +1,53 @@
-# File: modules/downhole_equipment.py
-# Purpose: Downhole equipment CRUD with cumulative counters.
+from __future__ import annotations
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QPushButton, QHBoxLayout, QTableWidgetItem, QMessageBox
+from modules.base import ModuleBase
+from database import session_scope
+from models import DownholeEquipment, Section
 
-from PySide2.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QComboBox, QMessageBox
-from .base import BaseModule
-from models import Section, DownholeEquipment
+class DownholeEquipmentModule(ModuleBase):
+    def __init__(self, SessionLocal, parent=None):
+        super().__init__(SessionLocal, parent)
+        self._section_id: int | None = None
+        self._setup_ui()
 
-class DownholeEquipmentWidget(QWidget):
-    def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self._build()
-        self._load_sections()
+    def _setup_ui(self):
+        lay = QVBoxLayout(self)
+        self.tbl = QTableWidget(0, 8)
+        self.tbl.setHorizontalHeaderLabels(["Equipment Name","S/N","ID","Sliding Hrs","Cum Rotation","Cum Pumping","Cum Total Hrs","Remarks"])
+        btns = QHBoxLayout()
+        add = QPushButton("Add"); rm = QPushButton("Delete"); save = QPushButton("Save")
+        add.clicked.connect(lambda: self.tbl.insertRow(self.tbl.rowCount()))
+        rm.clicked.connect(lambda: self.tbl.removeRow(self.tbl.currentRow()))
+        save.clicked.connect(self._save)
+        btns.addWidget(add); btns.addWidget(rm); btns.addStretch(1); btns.addWidget(save)
+        lay.addLayout(btns); lay.addWidget(self.tbl)
 
-    def _build(self):
-        self.l = QVBoxLayout(self)
-        self.cb_section = QComboBox(); self.l.addWidget(self.cb_section)
-        self.tbl = QTableWidget(0, 7); self.tbl.setHorizontalHeaderLabels(["Name","S/N","ID","Sliding Hrs","Cum Rot","Cum Pump","Cum Total Hrs"])
-        self.l.addWidget(self.tbl)
-        h = QHBoxLayout(); self.btn_add = QPushButton("Add"); self.btn_del = QPushButton("Delete"); self.btn_save = QPushButton("Save")
-        h.addWidget(self.btn_add); h.addWidget(self.btn_del); h.addWidget(self.btn_save); self.l.addLayout(h)
-        self.btn_add.clicked.connect(self._add); self.btn_del.clicked.connect(self._del); self.btn_save.clicked.connect(self._save)
-        self.cb_section.currentIndexChanged.connect(self._load)
-
-    def _load_sections(self):
-        self.cb_section.clear()
-        with self.db.get_session() as s:
-            rows = s.query(Section).all()
-        for r in rows: self.cb_section.addItem(f"{r.id} - {r.name}", r.id)
-
-    def _add(self):
-        r = self.tbl.rowCount(); self.tbl.insertRow(r)
-        for c in range(7): self.tbl.setItem(r,c, QTableWidgetItem(""))
-
-    def _del(self):
-        for r in sorted([i.row() for i in self.tbl.selectionModel().selectedRows()], reverse=True): self.tbl.removeRow(r)
-
-    def _load(self):
-        sid = self.cb_section.currentData()
-        self.tbl.setRowCount(0)
-        if sid is None: return
-        with self.db.get_session() as s:
-            rows = s.query(DownholeEquipment).filter_by(section_id=sid).all()
-        for e in rows:
-            r = self.tbl.rowCount(); self.tbl.insertRow(r)
-            self.tbl.setItem(r,0,QTableWidgetItem(e.name or "")); self.tbl.setItem(r,1,QTableWidgetItem(e.sn or ""))
-            self.tbl.setItem(r,2,QTableWidgetItem(str(e.inner_id_in or ""))); self.tbl.setItem(r,3,QTableWidgetItem(str(e.sliding_hours or "")))
-            self.tbl.setItem(r,4,QTableWidgetItem(str(e.cum_rotation or ""))); self.tbl.setItem(r,5,QTableWidgetItem(str(e.cum_pumping or "")))
-            self.tbl.setItem(r,6,QTableWidgetItem(str(e.cum_total_hours or "")))
+    def on_selection_changed(self, context: dict) -> None:
+        sel = context.get("selection")
+        if sel and sel[0] == "section":
+            self._section_id = int(sel[1])
 
     def _save(self):
-        sid = self.cb_section.currentData()
-        if sid is None: return
-        with self.db.get_session() as s:
-            for r in s.query(DownholeEquipment).filter_by(section_id=sid).all(): s.delete(r)
+        if not self._section_id:
+            QMessageBox.warning(self, "Selection", "Section را از درخت انتخاب کنید")
+            return
+        with session_scope(self.SessionLocal) as s:
+            s.query(DownholeEquipment).filter(DownholeEquipment.section_id==self._section_id).delete()
+            s.flush()
             for r in range(self.tbl.rowCount()):
-                name = self.tbl.item(r,0).text().strip() if self.tbl.item(r,0) else ''
-                if not name: continue
-                def f(c):
+                def gs(c):
+                    return self.tbl.item(r,c).text() if self.tbl.item(r,c) else ""
+                def gf(c):
                     try: return float(self.tbl.item(r,c).text())
-                    except: return 0.0
+                    except Exception: return None
                 s.add(DownholeEquipment(
-                    section_id=sid, name=name, sn=(self.tbl.item(r,1).text() if self.tbl.item(r,1) else ''),
-                    inner_id_in=f(2), sliding_hours=f(3), cum_rotation=f(4), cum_pumping=f(5), cum_total_hours=f(6)
+                    section_id=self._section_id,
+                    equipment_name=gs(0),
+                    serial_no=gs(1) or None,
+                    tool_id=gs(2) or None,
+                    sliding_hours=gf(3),
+                    cum_rotation=gf(4),
+                    cum_pumping=gf(5),
+                    cum_total_hours=gf(6)
                 ))
-        QMessageBox.information(self, "Saved", "Downhole equipment saved.")
-
-class DownholeEquipmentModule(BaseModule):
-    DISPLAY_NAME = "Downhole Equipment"
-    def __init__(self, db, parent=None):
-        super().__init__(db, parent); self.widget = DownholeEquipmentWidget(self.db)
-    def get_widget(self): return self.widget
+        QMessageBox.information(self, "Saved", "Downhole Equipment ذخیره شد")

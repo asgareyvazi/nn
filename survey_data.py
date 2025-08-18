@@ -1,65 +1,54 @@
-# File: modules/survey_data.py
-# Purpose: Survey table with add/remove rows (MD, Inc, TVD, Azi, North, East).
 
-from PySide2.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QComboBox, QMessageBox
-from .base import BaseModule
-from models import Section, Survey
+# =========================================
+# file: nikan_drill_master/modules/survey_data.py
+# =========================================
+from __future__ import annotations
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QPushButton, QHBoxLayout, QTableWidgetItem, QMessageBox
+from sqlalchemy.orm import Session
+from modules.base import ModuleBase
+from database import session_scope
+from models import Survey, Section
 
-class SurveyDataWidget(QWidget):
-    def __init__(self, db, parent=None):
-        super().__init__(parent); self.db=db; self._build(); self._load_sections()
+class SurveyDataModule(ModuleBase):
+    def __init__(self, SessionLocal, parent=None):
+        super().__init__(SessionLocal, parent)
+        self._section_id: int | None = None
+        self._setup_ui()
 
-    def _build(self):
-        self.l = QVBoxLayout(self)
-        self.cb_section = QComboBox(); self.l.addWidget(self.cb_section)
-        self.tbl = QTableWidget(0,10); self.tbl.setHorizontalHeaderLabels(["MD","Inc","TVD","Azi","Azimuth","North","East","VS/HD","DLS","Tool"])
-        self.l.addWidget(self.tbl)
-        h = QHBoxLayout(); self.btn_add = QPushButton("Add"); self.btn_del = QPushButton("Delete"); self.btn_save = QPushButton("Save")
-        h.addWidget(self.btn_add); h.addWidget(self.btn_del); h.addWidget(self.btn_save); self.l.addLayout(h)
-        self.btn_add.clicked.connect(self._add); self.btn_del.clicked.connect(self._del); self.btn_save.clicked.connect(self._save)
-        self.cb_section.currentIndexChanged.connect(self._load)
-        self._load_sections()
+    def _setup_ui(self):
+        lay = QVBoxLayout(self)
+        self.tbl = QTableWidget(0, 9)
+        self.tbl.setHorizontalHeaderLabels(["MD","Inc","TVD","Azi","North","East","VS/HD","DLS","Tool"])
+        btns = QHBoxLayout()
+        add = QPushButton("Add"); rm = QPushButton("Delete"); save = QPushButton("Save")
+        add.clicked.connect(lambda: self.tbl.insertRow(self.tbl.rowCount()))
+        rm.clicked.connect(lambda: self.tbl.removeRow(self.tbl.currentRow()))
+        save.clicked.connect(self._save)
+        btns.addWidget(add); btns.addWidget(rm); btns.addStretch(1); btns.addWidget(save)
+        lay.addLayout(btns); lay.addWidget(self.tbl)
 
-    def _load_sections(self):
-        self.cb_section.clear()
-        with self.db.get_session() as s:
-            rows = s.query(Section).all()
-        for r in rows: self.cb_section.addItem(f"{r.id} - {r.name}", r.id)
-
-    def _add(self):
-        r = self.tbl.rowCount(); self.tbl.insertRow(r)
-        for c in range(10): self.tbl.setItem(r,c,QTableWidgetItem(""))
-
-    def _del(self):
-        for r in sorted([i.row() for i in self.tbl.selectionModel().selectedRows()], reverse=True): self.tbl.removeRow(r)
-
-    def _load(self):
-        sid = self.cb_section.currentData(); self.tbl.setRowCount(0)
-        if sid is None: return
-        with self.db.get_session() as s:
-            rows = s.query(Survey).filter_by(section_id=sid).all()
-        for rec in rows:
-            r = self.tbl.rowCount(); self.tbl.insertRow(r)
-            self.tbl.setItem(r,0,QTableWidgetItem(str(rec.md or ""))); self.tbl.setItem(r,1,QTableWidgetItem(str(rec.inc or "")))
-            self.tbl.setItem(r,2,QTableWidgetItem(str(rec.tvd or ""))); self.tbl.setItem(r,3,QTableWidgetItem(str(rec.azi or "")))
-            self.tbl.setItem(r,4,QTableWidgetItem(str(rec.azimuth or ""))); self.tbl.setItem(r,5,QTableWidgetItem(str(rec.north or "")))
-            self.tbl.setItem(r,6,QTableWidgetItem(str(rec.east or ""))); self.tbl.setItem(r,7,QTableWidgetItem(str(rec.vs_hd or "")))
-            self.tbl.setItem(r,8,QTableWidgetItem(str(rec.dls or ""))); self.tbl.setItem(r,9,QTableWidgetItem(rec.tool or ""))
+    def on_selection_changed(self, context: dict) -> None:
+        sel = context.get("selection")
+        if sel and sel[0] == "section":
+            self._section_id = int(sel[1])
 
     def _save(self):
-        sid = self.cb_section.currentData(); 
-        if sid is None: return
-        with self.db.get_session() as s:
-            for rec in s.query(Survey).filter_by(section_id=sid).all(): s.delete(rec)
+        if not self._section_id:
+            QMessageBox.warning(self, "Selection", "Section را از درخت انتخاب کنید")
+            return
+        with session_scope(self.SessionLocal) as s:
+            s.query(Survey).filter(Survey.section_id==self._section_id).delete()
+            s.flush()
             for r in range(self.tbl.rowCount()):
-                def f(c):
-                    try: return float(self.tbl.item(r,c).text())
-                    except: return None
-                s.add(Survey(section_id=sid, md=f(0), inc=f(1), tvd=f(2), azi=f(3), azimuth=f(4), north=f(5), east=f(6), vs_hd=f(7), dls=f(8), tool=(self.tbl.item(r,9).text() if self.tbl.item(r,9) else "")))
-        QMessageBox.information(self, "Saved", "Survey data saved.")
-
-class SurveyDataModule(BaseModule):
-    DISPLAY_NAME = "Survey Data"
-    def __init__(self, db, parent=None):
-        super().__init__(db, parent); self.widget = SurveyDataWidget(self.db)
-    def get_widget(self): return self.widget
+                def gf(c):
+                    try: return float(self.tbl.item(r, c).text())
+                    except Exception: return None
+                def gs(c):
+                    return self.tbl.item(r, c).text() if self.tbl.item(r,c) else ""
+                s.add(Survey(
+                    section_id=self._section_id,
+                    md=gf(0), inc=gf(1), tvd=gf(2), azi=gf(3),
+                    north=gf(4), east=gf(5), vs_hd=gf(6), dls=gf(7),
+                    tool=gs(8) or None
+                ))
+        QMessageBox.information(self, "Saved", "Survey ذخیره شد")

@@ -1,56 +1,66 @@
-# File: ui/widgets/delegates.py
-# Purpose: Item delegates for Table editing: ComboBoxDelegate, TimeEditDelegate, CheckBoxDelegate, and NPT row painter
-# Next: modules/base.py
 
-from PySide2.QtWidgets import QStyledItemDelegate, QComboBox, QTimeEdit
-from PySide2.QtCore import Qt, QTime
-from PySide2.QtGui import QColor, QBrush
+# =========================================
+# file: nikan_drill_master/ui/widgets/delegates.py
+# =========================================
+from __future__ import annotations
+from PySide6.QtWidgets import QStyledItemDelegate, QComboBox
+from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QModelIndex
+from sqlalchemy.orm import Session
+from models import CodeMain, CodeSub
 
-class ComboBoxDelegate(QStyledItemDelegate):
-    def __init__(self, items_provider_callable, parent=None):
+class NPTRowColorDelegate(QStyledItemDelegate):
+    """چرا: برجسته‌سازی ردیف‌های NPT در Time Log"""
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        is_npt = index.model().data(index.siblingAtColumn(6), Qt.DisplayRole)  # col 6 = NPT bool display
+        if isinstance(is_npt, str):
+            is_npt = is_npt.lower() in ("true", "1", "yes")
+        if is_npt:
+            option.backgroundBrush = QColor("#4E2A2A")
+
+class CodeMainDelegate(QStyledItemDelegate):
+    def __init__(self, session: Session, parent=None):
         super().__init__(parent)
-        self.items_provider = items_provider_callable
+        self.session = session
 
     def createEditor(self, parent, option, index):
-        combo = QComboBox(parent)
-        items = self.items_provider(index)
-        for uid, txt in items:
-            combo.addItem(txt, userData=uid)
-        return combo
+        cb = QComboBox(parent)
+        cb.addItem("", None)
+        for m in self.session.query(CodeMain).order_by(CodeMain.phase, CodeMain.code).all():
+            cb.addItem(f"{m.phase} - {m.code} - {m.name}", m.id)
+        return cb
 
-    def setEditorData(self, editor, index):
-        value = index.model().data(index, Qt.EditRole)
-        for i in range(editor.count()):
-            if str(editor.itemData(i)) == str(value) or editor.itemText(i) == str(value):
-                editor.setCurrentIndex(i); return
+    def setEditorData(self, editor: QComboBox, index: QModelIndex) -> None:
+        val = index.data(Qt.EditRole)
+        i = editor.findData(val)
+        if i >= 0:
+            editor.setCurrentIndex(i)
 
-    def setModelData(self, editor, model, index):
+    def setModelData(self, editor: QComboBox, model, index) -> None:
         model.setData(index, editor.currentData(), Qt.EditRole)
 
-class TimeEditDelegate(QStyledItemDelegate):
-    def createEditor(self, parent, option, index):
-        te = QTimeEdit(parent); te.setDisplayFormat("HH:mm:ss"); return te
-    def setEditorData(self, editor, index):
-        val = index.model().data(index, Qt.EditRole) or "00:00:00"
-        parts = str(val).split(':')
-        h = int(parts[0]) if parts and parts[0].isdigit() else 0
-        m = int(parts[1]) if len(parts)>1 and parts[1].isdigit() else 0
-        s = int(parts[2]) if len(parts)>2 and parts[2].isdigit() else 0
-        editor.setTime(QTime(h, m, s))
-    def setModelData(self, editor, model, index):
-        model.setData(index, editor.time().toString("HH:mm:ss"), Qt.EditRole)
+class CodeSubDelegate(QStyledItemDelegate):
+    def __init__(self, session: Session, main_code_col: int, parent=None):
+        super().__init__(parent)
+        self.session = session
+        self.main_code_col = main_code_col
 
-class CheckBoxDelegate(QStyledItemDelegate):
-    # uses combobox style to avoid paint complexity
     def createEditor(self, parent, option, index):
-        combo = QComboBox(parent); combo.addItem("No", False); combo.addItem("Yes", True); return combo
-    def setEditorData(self, editor, index):
-        val = index.model().data(index, Qt.EditRole)
-        editor.setCurrentIndex(1 if val in (True, 'True', '1', 1) else 0)
-    def setModelData(self, editor, model, index):
-        model.setData(index, bool(editor.currentData()), Qt.EditRole)
+        cb = QComboBox(parent)
+        cb.addItem("", None)
+        # main code id from sibling column
+        main_id = index.model().data(index.siblingAtColumn(self.main_code_col), Qt.EditRole)
+        if main_id:
+            for s in self.session.query(CodeSub).filter(CodeSub.main_id == main_id).order_by(CodeSub.sub_code).all():
+                cb.addItem(f"{s.sub_code} - {s.name}", s.id)
+        return cb
 
-class NPTRowPainter:
-    @staticmethod
-    def background_for(is_npt: bool):
-        return QBrush(QColor(255, 230, 200)) if is_npt else QBrush(Qt.transparent)
+    def setEditorData(self, editor: QComboBox, index: QModelIndex) -> None:
+        val = index.data(Qt.EditRole)
+        i = editor.findData(val)
+        if i >= 0:
+            editor.setCurrentIndex(i)
+
+    def setModelData(self, editor: QComboBox, model, index) -> None:
+        model.setData(index, editor.currentData(), Qt.EditRole)

@@ -1,196 +1,169 @@
-# File: modules/daily_report.py
-# Purpose: Full TimeLogTableModel + DailyReportWidget (cascade Main->Sub, duration calculation, NPT coloring)
-# Next: modules/well_info.py (to be delivered in next batch)
 
-from PySide2.QtWidgets import QWidget, QVBoxLayout, QPushButton, QTableView, QHBoxLayout, QDateEdit, QLabel, QMessageBox
-from PySide2.QtCore import Qt, QAbstractTableModel, QModelIndex, QDate
-from .base import BaseModule
-from models import DailyReport, TimeLog, MainCode, SubCode
-from ui.widgets.delegates import ComboBoxDelegate, TimeEditDelegate, CheckBoxDelegate, NPTRowPainter
-from datetime import datetime
+# =========================================
+# file: nikan_drill_master/modules/daily_report.py
+# =========================================
+from __future__ import annotations
+from datetime import date
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QDateEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QTimeEdit, QCheckBox, QComboBox, QMessageBox
+from PySide6.QtCore import QTime
+from sqlalchemy.orm import Session
+from database import session_scope
+from modules.base import ModuleBase
+from models import Section, DailyReport, TimeLog, CodeMain, CodeSub
+from utils import minutes_between
 
-COL_FROM = 0; COL_TO = 1; COL_DURATION = 2; COL_MAIN = 3; COL_SUB = 4; COL_DESC = 5; COL_NPT = 6; COL_STATUS = 7
+class DailyReportModule(ModuleBase):
+    COL_FROM, COL_TO, COL_DUR, COL_MAIN, COL_SUB, COL_DESC, COL_NPT, COL_STATUS = range(8)
 
-class TimeLogTableModel(QAbstractTableModel):
-    HEADERS = ['From', 'To', 'Duration(min)', 'Main Code', 'Sub Code', 'Description', 'NPT', 'Status']
-    def __init__(self, db, daily_report_id=None):
-        super().__init__(); self.db=db; self.daily_report_id=daily_report_id; self.rows=[]
-        if daily_report_id: self.load(daily_report_id)
+    def __init__(self, SessionLocal, parent=None):
+        super().__init__(SessionLocal, parent)
+        self._section_id: int | None = None
+        self._setup_ui()
 
-    def load(self, daily_report_id):
-        self.beginResetModel(); self.daily_report_id=daily_report_id
-        with self.db.get_session() as s:
-            self.rows = s.query(TimeLog).filter_by(daily_report_id=daily_report_id).order_by(TimeLog.id).all()
-            for r in self.rows: _=r.main_code; _=r.sub_code
-        self.endResetModel()
+    def _setup_ui(self):
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        self.report_date = QDateEdit(); self.report_date.setCalendarPopup(True)
+        self.rig_day = QSpinBox(); self.rig_day.setRange(0, 10000)
+        self.depth_0000 = QSpinBox(); self.depth_0000.setRange(0, 100000)
+        self.depth_0600 = QSpinBox(); self.depth_0600.setRange(0, 100000)
+        self.depth_2400 = QSpinBox(); self.depth_2400.setRange(0, 100000)
+        self.pit_gain = QDoubleSpinBox(); self.pit_gain.setDecimals(2); self.pit_gain.setRange(-1e6, 1e6)
 
-    def rowCount(self, parent=QModelIndex()): return len(self.rows)
-    def columnCount(self, parent=QModelIndex()): return len(self.HEADERS)
+        self.operations_done = QTextEdit()
+        self.work_summary = QTextEdit()
+        self.alerts = QTextEdit()
+        self.general_notes = QTextEdit()
 
-    def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid(): return None
-        tl = self.rows[index.row()]; c = index.column()
-        if role in (Qt.DisplayRole, Qt.EditRole):
-            return [
-                tl.from_time or '', tl.to_time or '', tl.duration_minutes or 0,
-                tl.main_phase_code_id or (tl.main_code.code if tl.main_code else ''),
-                tl.sub_code_id or (tl.sub_code.code if tl.sub_code else ''),
-                tl.description or '', bool(tl.is_npt), tl.status or ''
-            ][c]
-        if role == Qt.BackgroundRole and getattr(tl, 'is_npt', False):
-            return NPTRowPainter.background_for(True)
-        return None
+        form.addRow("Report Date", self.report_date)
+        form.addRow("Rig Day", self.rig_day)
+        form.addRow("Depth @ 00:00 / 06:00 / 24:00", _row3(self.depth_0000, self.depth_0600, self.depth_2400))
+        form.addRow("Pit Gain", self.pit_gain)
+        form.addRow("Operations Done", self.operations_done)
+        form.addRow("Work Summary", self.work_summary)
+        form.addRow("Alerts/Problems", self.alerts)
+        form.addRow("General Notes", self.general_notes)
 
-    def headerData(self, s, o, r=Qt.DisplayRole):
-        return self.HEADERS[s] if (r==Qt.DisplayRole and o==1) else None
+        # Time Log
+        self.tbl = QTableWidget(0, 8)
+        self.tbl.setHorizontalHeaderLabels(["From", "To", "Duration (min)", "Main Code", "Sub-Code", "Description", "NPT", "Status"])
 
-    def flags(self, index):
-        return Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable if index.isValid() else Qt.ItemIsEnabled
+        btns = QHBoxLayout()
+        add = QPushButton("Add Row"); delete = QPushButton("Delete Row"); save = QPushButton("Save")
+        add.clicked.connect(self._add_row); delete.clicked.connect(self._del_row); save.clicked.connect(self._save)
+        btns.addWidget(add); btns.addWidget(delete); btns.addStretch(1); btns.addWidget(save)
 
-    def setData(self, index, value, role=Qt.EditRole):
-        if not index.isValid(): return False
-        r = index.row(); c = index.column(); tl = self.rows[r]
-        with self.db.get_session() as s:
-            obj = s.query(TimeLog).get(tl.id)
-            if not obj: return False
-            if c==COL_FROM: obj.from_time = str(value)
-            elif c==COL_TO: obj.to_time = str(value)
-            elif c==COL_DURATION:
-                try: obj.duration_minutes = int(value)
-                except: obj.duration_minutes = 0
-            elif c==COL_MAIN:
-                obj.main_phase_code_id = int(value) if value not in (None,'') else None
-                if obj.sub_code_id:
-                    sc = s.query(SubCode).get(obj.sub_code_id)
-                    if sc and sc.main_code_id != obj.main_phase_code_id: obj.sub_code_id = None
-            elif c==COL_SUB: obj.sub_code_id = int(value) if value not in (None,'') else None
-            elif c==COL_DESC: obj.description = str(value)
-            elif c==COL_NPT: obj.is_npt = bool(value)
-            elif c==COL_STATUS: obj.status = str(value)
-            # auto duration:
-            try:
-                if obj.from_time and obj.to_time:
-                    fm = _to_minutes(obj.from_time); tm = _to_minutes(obj.to_time)
-                    if tm < fm: tm += 24*60
-                    obj.duration_minutes = max(0, tm - fm)
-            except: pass
-            s.flush(); refreshed = s.query(TimeLog).get(obj.id); self.rows[r] = refreshed
-        self.dataChanged.emit(index, index)
-        if c in (COL_FROM, COL_TO):
-            self.dataChanged.emit(self.index(r, COL_DURATION), self.index(r, COL_DURATION))
-        return True
+        lay.addLayout(form)
+        lay.addLayout(btns)
+        lay.addWidget(self.tbl)
 
-    def insertRows(self, pos, rows=1, parent=QModelIndex()):
-        self.beginInsertRows(QModelIndex(), pos, pos+rows-1)
-        with self.db.get_session() as s:
-            for _ in range(rows):
-                tl = TimeLog(daily_report_id=self.daily_report_id, from_time='00:00:00', to_time='00:00:00', duration_minutes=0, is_npt=False, status='')
-                s.add(tl); s.flush()
-        self.load(self.daily_report_id); self.endInsertRows(); return True
+    def on_activated(self, context: dict) -> None:
+        self.on_selection_changed(context)
 
-    def removeRows(self, pos, rows=1, parent=QModelIndex()):
-        if pos<0 or pos>=len(self.rows): return False
-        self.beginRemoveRows(QModelIndex(), pos, pos+rows-1)
-        ids=[self.rows[pos+i].id for i in range(rows) if pos+i < len(self.rows)]
-        with self.db.get_session() as s:
-            for i in ids:
-                obj = s.query(TimeLog).get(i)
-                if obj: s.delete(obj)
-        self.load(self.daily_report_id); self.endRemoveRows(); return True
+    def on_selection_changed(self, context: dict) -> None:
+        sel = context.get("selection")
+        if sel and sel[0] == "section":
+            self._section_id = int(sel[1])
+        # در این نسخه: ایجاد گزارش جدید با تاریخ انتخابی کاربر
 
-    def main_code_choices(self, index=None):
-        with self.db.get_session() as s:
-            rows = s.query(MainCode).order_by(MainCode.code).all()
-        return [(r.id, f"{r.code} - {r.name}") for r in rows]
+    def _add_row(self):
+        r = self.tbl.rowCount(); self.tbl.insertRow(r)
+        from_edit = QTimeEdit(); to_edit = QTimeEdit()
+        from_edit.setTime(QTime(0,0)); to_edit.setTime(QTime(0,0))
+        self.tbl.setCellWidget(r, self.COL_FROM, from_edit)
+        self.tbl.setCellWidget(r, self.COL_TO, to_edit)
+        self.tbl.setItem(r, self.COL_DUR, QTableWidgetItem("0"))
 
-    def sub_code_choices_for_row(self, row_idx):
-        if row_idx<0 or row_idx>=len(self.rows): return []
-        main_id = self.rows[row_idx].main_phase_code_id
-        if not main_id: return []
-        with self.db.get_session() as s:
-            subs = s.query(SubCode).filter_by(main_code_id=main_id).order_by(SubCode.code).all()
-        return [(r.id, f"{r.code} - {r.name}") for r in subs]
+        main_cb = QComboBox(); main_cb.addItem("", None)
+        sub_cb = QComboBox(); sub_cb.addItem("", None)
+        with session_scope(self.SessionLocal) as s:
+            mains = s.query(CodeMain).order_by(CodeMain.phase, CodeMain.code).all()
+            for m in mains:
+                main_cb.addItem(f"{m.phase}-{m.code}-{m.name}", m.id)
+        main_cb.currentIndexChanged.connect(lambda _=None, row=r: self._reload_subcodes(row))
+        self.tbl.setCellWidget(r, self.COL_MAIN, main_cb)
+        self.tbl.setCellWidget(r, self.COL_SUB, sub_cb)
 
-def _to_minutes(s: str):
-    try:
-        h, m, *rest = s.split(':'); sec = int(rest[0]) if rest else 0
-        return int(h)*60 + int(m) + (1 if sec>=30 else 0)
-    except: return 0
+        self.tbl.setItem(r, self.COL_DESC, QTableWidgetItem(""))
+        chk = QCheckBox()
+        self.tbl.setCellWidget(r, self.COL_NPT, chk)
+        status = QComboBox(); status.addItems(["", "Done", "Continue", "Pending"])
+        self.tbl.setCellWidget(r, self.COL_STATUS, status)
 
-class DailyReportWidget(QWidget):
-    def __init__(self, db, parent=None):
-        super().__init__(parent); self.db=db; self.current_report_id=None; self._build()
+        from_edit.timeChanged.connect(lambda _=None, row=r: self._recalc_duration(row))
+        to_edit.timeChanged.connect(lambda _=None, row=r: self._recalc_duration(row))
 
-    def _build(self):
-        v = QVBoxLayout(self)
-        top = QHBoxLayout()
-        self.date_edit = QDateEdit(); self.date_edit.setCalendarPopup(True); self.date_edit.setDate(QDate.currentDate())
-        self.lbl_section = QLabel("Section: -")
-        btn_load = QPushButton("Load Report"); btn_new = QPushButton("New Report")
-        btn_save = QPushButton("Save Report"); btn_add = QPushButton("Add TimeLog"); btn_del = QPushButton("Delete Selected")
-        for w in (self.lbl_section, self.date_edit, btn_load, btn_new, btn_save, btn_add, btn_del): top.addWidget(w)
-        v.addLayout(top)
+    def _reload_subcodes(self, row: int):
+        main_cb: QComboBox = self.tbl.cellWidget(row, self.COL_MAIN)  # type: ignore
+        sub_cb: QComboBox = self.tbl.cellWidget(row, self.COL_SUB)   # type: ignore
+        sub_cb.clear(); sub_cb.addItem("", None)
+        main_id = main_cb.currentData()
+        if not main_id:
+            return
+        with session_scope(self.SessionLocal) as s:
+            subs = s.query(CodeSub).filter(CodeSub.main_id == main_id).order_by(CodeSub.sub_code).all()
+            for x in subs:
+                sub_cb.addItem(f"{x.sub_code}-{x.name}", x.id)
 
-        self.table = QTableView(); v.addWidget(self.table)
+    def _recalc_duration(self, row: int):
+        fe: QTimeEdit = self.tbl.cellWidget(row, self.COL_FROM)  # type: ignore
+        te: QTimeEdit = self.tbl.cellWidget(row, self.COL_TO)    # type: ignore
+        mins = minutes_between(fe.time().toPython(), te.time().toPython())
+        self.tbl.item(row, self.COL_DUR).setText(str(mins))
 
-        btn_new.clicked.connect(self._new_report)
-        btn_load.clicked.connect(self._load_prompt)
-        btn_save.clicked.connect(self._save_report)
-        btn_add.clicked.connect(self._add_time_log)
-        btn_del.clicked.connect(self._delete_selected)
+    def _del_row(self):
+        r = self.tbl.currentRow()
+        if r >= 0:
+            self.tbl.removeRow(r)
 
-    def _new_report(self):
-        self.current_report_id=None; self.date_edit.setDate(QDate.currentDate()); self.lbl_section.setText("Section: -")
+    def _save(self):
+        if not self._section_id:
+            QMessageBox.warning(self, "Selection", "ابتدا درخت سمت چپ: Section را انتخاب کنید")
+            return
+        dr_date = self.report_date.date().toPython()
+        with session_scope(self.SessionLocal) as s:
+            dr = s.query(DailyReport).filter(DailyReport.section_id==self._section_id, DailyReport.report_date==dr_date).one_or_none()
+            if not dr:
+                dr = DailyReport(section_id=self._section_id, report_date=dr_date)
+                s.add(dr); s.flush()
 
-    def _load_prompt(self):
-        QMessageBox.information(self, "Load", "Open a section from the left tree (double-click) to load/create today's report.")
+            dr.rig_day = self.rig_day.value()
+            dr.depth_0000_ft = self.depth_0000.value()
+            dr.depth_0600_ft = self.depth_0600.value()
+            dr.depth_2400_ft = self.depth_2400.value()
+            dr.pit_gain = self.pit_gain.value()
+            dr.operations_done = self.operations_done.toPlainText().strip() or None
+            dr.work_summary = self.work_summary.toPlainText().strip() or None
+            dr.alerts = self.alerts.toPlainText().strip() or None
+            dr.general_notes = self.general_notes.toPlainText().strip() or None
 
-    def load_daily_report(self, report_id):
-        self.current_report_id = report_id
-        with self.db.get_session() as s:
-            dr = s.query(DailyReport).get(report_id)
-            if not dr: return QMessageBox.warning(self, "Not found", "Daily report not found")
-            self.date_edit.setDate(QDate(dr.report_date.year, dr.report_date.month, dr.report_date.day))
-            self.lbl_section.setText(f"Section: {dr.section_id}")
-        self.model = TimeLogTableModel(self.db, report_id)
-        self.table.setModel(self.model)
-        self.table.setItemDelegateForColumn(COL_FROM, TimeEditDelegate(self.table))
-        self.table.setItemDelegateForColumn(COL_TO, TimeEditDelegate(self.table))
-        self.table.setItemDelegateForColumn(COL_MAIN, ComboBoxDelegate(lambda idx: self.model.main_code_choices(idx), self.table))
-        self.table.setItemDelegateForColumn(COL_SUB, ComboBoxDelegate(lambda idx: self.model.sub_code_choices_for_row(idx.row()), self.table))
-        self.table.setItemDelegateForColumn(COL_NPT, CheckBoxDelegate(self.table))
-        self.table.horizontalHeader().setStretchLastSection(True); self.table.resizeColumnsToContents()
+            # clear and re-add time logs
+            s.query(TimeLog).filter(TimeLog.daily_report_id==dr.id).delete()
+            s.flush()
+            for r in range(self.tbl.rowCount()):
+                fe: QTimeEdit = self.tbl.cellWidget(r, self.COL_FROM)  # type: ignore
+                te: QTimeEdit = self.tbl.cellWidget(r, self.COL_TO)    # type: ignore
+                dur = int(self.tbl.item(r, self.COL_DUR).text()) if self.tbl.item(r, self.COL_DUR) else 0
+                main_id = self.tbl.cellWidget(r, self.COL_MAIN).currentData()  # type: ignore
+                sub_id = self.tbl.cellWidget(r, self.COL_SUB).currentData()    # type: ignore
+                desc = self.tbl.item(r, self.COL_DESC).text() if self.tbl.item(r, self.COL_DESC) else ""
+                is_npt = bool(self.tbl.cellWidget(r, self.COL_NPT).isChecked())  # type: ignore
+                status = self.tbl.cellWidget(r, self.COL_STATUS).currentText()   # type: ignore
 
-    def _save_report(self):
-        if not self.current_report_id: return QMessageBox.warning(self, "No report", "No report loaded")
-        with self.db.get_session() as s:
-            dr = s.query(DailyReport).get(self.current_report_id)
-            if not dr: return QMessageBox.warning(self, "Error", "Report not found")
-            qd = self.date_edit.date(); dr.report_date = qd.toPython()
-        QMessageBox.information(self, "Saved", "Report metadata saved.")
+                s.add(TimeLog(
+                    daily_report_id=dr.id,
+                    time_from=fe.time().toPython(),
+                    time_to=te.time().toPython(),
+                    duration_min=dur,
+                    main_code_id=main_id,
+                    sub_code_id=sub_id,
+                    description=desc or None,
+                    is_npt=is_npt,
+                    status=status or None
+                ))
+        QMessageBox.information(self, "Saved", "Daily Report ذخیره شد")
 
-    def _add_time_log(self):
-        if not self.current_report_id: return QMessageBox.warning(self, "No report", "Load or create a report first")
-        self.model.insertRows(self.model.rowCount(), 1)
-
-    def _delete_selected(self):
-        sel = self.table.selectionModel().selectedRows()
-        if not sel: return
-        for r in sorted([i.row() for i in sel], reverse=True):
-            self.model.removeRows(r, 1)
-
-class DailyReportModule(BaseModule):
-    DISPLAY_NAME = "Daily Report"
-    def __init__(self, db, parent=None):
-        super().__init__(db, parent); self.widget = DailyReportWidget(self.db)
-    def get_widget(self): return self.widget
-    def on_show(self, daily_report_id=None, section_id=None):
-        if daily_report_id: return self.widget.load_daily_report(daily_report_id)
-        if section_id:
-            today = datetime.utcnow().date()
-            with self.db.get_session() as s:
-                dr = s.query(DailyReport).filter_by(section_id=section_id, report_date=today).first()
-                if not dr:
-                    dr = DailyReport(section_id=section_id, report_date=today); s.add(dr); s.flush()
-                rid = dr.id
-            self.widget.load_daily_report(rid)
+def _row3(a, b, c):
+    w = QWidget(); from PySide6.QtWidgets import QHBoxLayout
+    lay = QHBoxLayout(w); lay.setContentsMargins(0,0,0,0); lay.addWidget(a); lay.addWidget(b); lay.addWidget(c)
+    return w

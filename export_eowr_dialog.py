@@ -3,11 +3,11 @@
 Dialog to select well/project and options for End-of-Well export
 """
 
-from PySide2.QtWidgets import (
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QListWidget,
     QListWidgetItem, QPushButton, QFileDialog, QCheckBox, QMessageBox
 )
-from PySide2.QtCore import Qt
+from PySide6.QtCore import Qt
 from database import Database
 from models import Company, Project, Well, Section
 

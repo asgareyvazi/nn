@@ -1,46 +1,40 @@
-# File: ui/widgets/tree_view.py
-# Purpose: Project tree (Company > Project > Well > Section). Emits selection signals.
 
-from PySide2.QtWidgets import QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem
-from PySide2.QtCore import Signal
+# =========================================
+# file: nikan_drill_master/ui/widgets/tree_view.py
+# =========================================
+from __future__ import annotations
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem
+from PySide6.QtCore import Qt
+from sqlalchemy.orm import Session
+from models import Company, Project, Well, Section, DailyReport
 
-class ProjectTree(QWidget):
-    open_daily_report = Signal(int)  # section_id
-
-    def __init__(self, db, parent=None):
+class HierarchyTree(QWidget):
+    """چرا: ناوبری سلسله‌مراتبی Company > Project > Well > Section > DailyReport"""
+    def __init__(self, session: Session, parent=None):
         super().__init__(parent)
-        self.db = db
+        self.session = session
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Hierarchy"])
-        self.tree.itemDoubleClicked.connect(self._on_dblclick)
+        self.tree.setHeaderHidden(True)
+        self.tree.setSelectionMode(QTreeWidget.SingleSelection)
         lay = QVBoxLayout(self)
         lay.addWidget(self.tree)
-        self.reload()
+        self.refresh()
 
-    def reload(self):
-        from models import Company, Project, Well, Section
+    def refresh(self) -> None:
         self.tree.clear()
-        with self.db.get_session() as s:
-            companies = s.query(Company).all()
-            for c in companies:
-                ci = QTreeWidgetItem([f"Company: {c.name}"])
-                ci.setData(0, 32, ("company", c.id))
-                self.tree.addTopLevelItem(ci)
-                for p in c.projects:
-                    pi = QTreeWidgetItem([f"Project: {p.name}"])
-                    pi.setData(0, 32, ("project", p.id))
-                    ci.addChild(pi)
-                    for w in p.wells:
-                        wi = QTreeWidgetItem([f"Well: {w.name}"])
-                        wi.setData(0, 32, ("well", w.id))
-                        pi.addChild(wi)
-                        for sec in w.sections:
-                            si = QTreeWidgetItem([f"Section: {sec.name}"])
-                            si.setData(0, 32, ("section", sec.id))
-                            wi.addChild(si)
-        self.tree.expandAll()
-
-    def _on_dblclick(self, item, col):
-        kind, _id = item.data(0, 32) or (None, None)
-        if kind == "section":
-            self.open_daily_report.emit(_id)
+        for c in self.session.query(Company).order_by(Company.name).all():
+            c_item = QTreeWidgetItem([c.name]); c_item.setData(0, Qt.UserRole, ("company", c.id))
+            self.tree.addTopLevelItem(c_item)
+            for p in c.projects:
+                p_item = QTreeWidgetItem([p.name]); p_item.setData(0, Qt.UserRole, ("project", p.id))
+                c_item.addChild(p_item)
+                for w in p.wells:
+                    w_item = QTreeWidgetItem([w.name]); w_item.setData(0, Qt.UserRole, ("well", w.id))
+                    p_item.addChild(w_item)
+                    for s in w.sections:
+                        s_item = QTreeWidgetItem([s.name]); s_item.setData(0, Qt.UserRole, ("section", s.id))
+                        w_item.addChild(s_item)
+                        for dr in s.daily_reports:
+                            d_item = QTreeWidgetItem([f"DR {dr.report_date.isoformat()}"]); d_item.setData(0, Qt.UserRole, ("daily_report", dr.id))
+                            s_item.addChild(d_item)
+        self.tree.expandToDepth(1)

@@ -1,66 +1,51 @@
-from PySide2.QtCore import Qt, QDate
-from PySide2.QtWidgets import (
-    QTableView, QPushButton, QHBoxLayout, QWidget,
-    QStyledItemDelegate, QDateEdit
+# File: modules/cement_casing.py
+# Purpose: Cement & Additives inventory per section.
+
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
+    QPushButton, QHBoxLayout, QMessageBox, QComboBox
 )
-from PySide2.QtGui import QStandardItemModel, QStandardItem
-from modules.base import ModuleBase
+from PySide6.QtCore import Qt, QDate
+from .base import ModuleBase  # فرض می‌کنیم پایه ModuleBase در پروژه هست
+from models import CementJob, AdditiveInventory, CasingData  # فرض می‌کنیم مدل‌های دیتابیس
 
+class CementAdditivesWidget(QWidget):
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self._build()
+        self._load_data()
 
-class DateDelegate(QStyledItemDelegate):
-    """Delegate for displaying and editing dates in table cells"""
-    def createEditor(self, parent, option, index):
-        editor = QDateEdit(parent)
-        editor.setDisplayFormat("yyyy-MM-dd")
-        editor.setCalendarPopup(True)
-        return editor
+    def _build(self):
+        layout = QVBoxLayout(self)
 
-
-class CementAdditivesModule(ModuleBase):
-    """
-    Cement & Additives Module:
-    Comprehensive management of cement jobs, additives inventory, and casing data
-    with full database integration.
-    """
-
-    def __init__(self, parent: QWidget = None):
-        super().__init__("Cement & Additives", parent)
-        self._setup_ui()
-        self._configure_tables()
-        self._connect_signals()
-
-    def _setup_ui(self) -> None:
-        """Initialize all UI components"""
         # --- Cement Jobs Table ---
-        job_headers = [
+        self.job_table = QTableWidget(0, 8)
+        self.job_table.setHorizontalHeaderLabels([
             "Date", "Job Type", "Volume (sx)", "Additives",
-            "Mix Density (ppg)", "Pressure (psi)", "Result", "Remarks"
-        ]
-        self.job_group, self.job_table, self.job_model = self.create_table_group(
-            "Cement Jobs", job_headers
-        )
+            "Mix Density", "Pressure", "Result", "Remarks"
+        ])
+        layout.addWidget(self.job_table)
 
         # --- Additives Inventory Table ---
-        inv_headers = [
+        self.inv_table = QTableWidget(0, 8)
+        self.inv_table.setHorizontalHeaderLabels([
             "Product", "Type", "Received", "Used",
             "Stock", "Unit", "Supplier", "Batch No"
-        ]
-        self.inv_group, self.inv_table, self.inv_model = self.create_table_group(
-            "Additives Inventory", inv_headers
-        )
+        ])
+        layout.addWidget(self.inv_table)
 
         # --- Casing Information Table ---
-        casing_headers = [
-            "Size (in)", "From (m)", "To (m)", "Grade",
-            "Weight (#)", "Thread", "Shoe (TVD m)",
-            "Burst (psi)", "Collapse (psi)", "Centralizers"
-        ]
-        self.casing_group, self.casing_table, self.casing_model = self.create_table_group(
-            "Casing Information", casing_headers
-        )
+        self.casing_table = QTableWidget(0, 10)
+        self.casing_table.setHorizontalHeaderLabels([
+            "Size", "From", "To", "Grade",
+            "Weight", "Thread", "Shoe TVD",
+            "Burst", "Collapse", "Centralizers"
+        ])
+        layout.addWidget(self.casing_table)
 
-        # --- Control Buttons ---
-        self.btn_layout = QHBoxLayout()
+        # --- Buttons ---
+        btn_layout = QHBoxLayout()
         self.btn_add_job = QPushButton("Add Cement Job")
         self.btn_remove_job = QPushButton("Remove Job")
         self.btn_add_additive = QPushButton("Add Additive")
@@ -69,302 +54,168 @@ class CementAdditivesModule(ModuleBase):
         self.btn_remove_casing = QPushButton("Remove Casing")
         self.btn_save = QPushButton("Save All")
 
-        for btn in (
+        for btn in [
             self.btn_add_job, self.btn_remove_job,
             self.btn_add_additive, self.btn_remove_additive,
             self.btn_add_casing, self.btn_remove_casing,
             self.btn_save
-        ):
-            self.btn_layout.addWidget(btn)
-        self.btn_layout.addStretch()
+        ]:
+            btn_layout.addWidget(btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
 
-        # --- Assemble Layout ---
-        self.scroll_layout.addWidget(self.job_group)
-        self.scroll_layout.addWidget(self.inv_group)
-        self.scroll_layout.addWidget(self.casing_group)
-        self.scroll_layout.addLayout(self.btn_layout)
-        self.scroll_layout.addStretch()
-
-    def _configure_tables(self) -> None:
-        """Configure table properties and delegates"""
-        # Common table settings
-        for table in [self.job_table, self.inv_table, self.casing_table]:
-            table.setSelectionBehavior(QTableView.SelectRows)
-            table.setEditTriggers(QTableView.DoubleClicked | QTableView.EditKeyPressed)
-            table.horizontalHeader().setStretchLastSection(True)
-
-        # Set date delegate for cement jobs
-        date_delegate = DateDelegate()
-        self.job_table.setItemDelegateForColumn(0, date_delegate)
-
-        # Configure models
-        self.job_model.setHorizontalHeaderLabels([
-            "Date", "Job Type", "Volume (sx)", "Additives",
-            "Mix Density", "Pressure", "Result", "Remarks"
-        ])
-
-        self.inv_model.setHorizontalHeaderLabels([
-            "Product", "Type", "Received", "Used",
-            "Stock", "Unit", "Supplier", "Batch No"
-        ])
-
-        self.casing_model.setHorizontalHeaderLabels([
-            "Size", "From", "To", "Grade",
-            "Weight", "Thread", "Shoe TVD",
-            "Burst", "Collapse", "Centralizers"
-        ])
-
-    def _connect_signals(self) -> None:
-        """Connect button signals to their handlers"""
-        self.btn_add_job.clicked.connect(self._add_cement_job)
-        self.btn_remove_job.clicked.connect(lambda: self._remove_selected_row(self.job_model, self.job_table))
+        # Connect signals
+        self.btn_add_job.clicked.connect(self._add_job)
+        self.btn_remove_job.clicked.connect(lambda: self._remove_selected_row(self.job_table))
         self.btn_add_additive.clicked.connect(self._add_additive)
-        self.btn_remove_additive.clicked.connect(lambda: self._remove_selected_row(self.inv_model, self.inv_table))
+        self.btn_remove_additive.clicked.connect(lambda: self._remove_selected_row(self.inv_table))
         self.btn_add_casing.clicked.connect(self._add_casing)
-        self.btn_remove_casing.clicked.connect(lambda: self._remove_selected_row(self.casing_model, self.casing_table))
-        self.btn_save.clicked.connect(self.save_data)
+        self.btn_remove_casing.clicked.connect(lambda: self._remove_selected_row(self.casing_table))
+        self.btn_save.clicked.connect(self._save)
 
-    def _add_cement_job(self) -> None:
-        """Add new cement job record"""
-        row = self.job_model.rowCount()
-        items = [
-            QStandardItem(),  # Date
-            QStandardItem(),  # Job Type
-            QStandardItem("0"),  # Volume
-            QStandardItem(),  # Additives
-            QStandardItem("0"),  # Mix Density
-            QStandardItem("0"),  # Pressure
-            QStandardItem(),  # Result
-            QStandardItem()   # Remarks
-        ]
-        
-        # Set current date as default
-        items[0].setData(QDate.currentDate(), Qt.DisplayRole)
-        
-        for item in items:
-            item.setEditable(True)
-            
-        self.job_model.insertRow(row, items)
-        self.job_table.selectRow(row)
+    def _add_job(self):
+        row = self.job_table.rowCount()
+        self.job_table.insertRow(row)
+        # Default date today as string
+        self.job_table.setItem(row, 0, QTableWidgetItem(QDate.currentDate().toString("yyyy-MM-dd")))
+        for col in range(1, 8):
+            self.job_table.setItem(row, col, QTableWidgetItem(""))
 
-    def _add_additive(self) -> None:
-        """Add new additive to inventory"""
-        row = self.inv_model.rowCount()
-        items = [
-            QStandardItem(),  # Product
-            QStandardItem(),  # Type
-            QStandardItem("0"),  # Received
-            QStandardItem("0"),  # Used
-            QStandardItem("0"),  # Stock
-            QStandardItem("kg"),  # Unit
-            QStandardItem(),  # Supplier
-            QStandardItem()   # Batch No
-        ]
-        
-        for item in items:
-            item.setEditable(True)
-            
-        self.inv_model.insertRow(row, items)
-        self.inv_table.selectRow(row)
+    def _add_additive(self):
+        row = self.inv_table.rowCount()
+        self.inv_table.insertRow(row)
+        # Defaults: Received=0, Used=0, Stock=0, Unit=kg
+        defaults = ["", "", "0", "0", "0", "kg", "", ""]
+        for col, val in enumerate(defaults):
+            self.inv_table.setItem(row, col, QTableWidgetItem(val))
 
-    def _add_casing(self) -> None:
-        """Add new casing record"""
-        row = self.casing_model.rowCount()
-        items = [
-            QStandardItem("0"),  # Size
-            QStandardItem("0"),  # From
-            QStandardItem("0"),  # To
-            QStandardItem(),  # Grade
-            QStandardItem("0"),  # Weight
-            QStandardItem(),  # Thread
-            QStandardItem("0"),  # Shoe TVD
-            QStandardItem("0"),  # Burst
-            QStandardItem("0"),  # Collapse
-            QStandardItem("0")   # Centralizers
-        ]
-        
-        for item in items:
-            item.setEditable(True)
-            
-        self.casing_model.insertRow(row, items)
-        self.casing_table.selectRow(row)
+    def _add_casing(self):
+        row = self.casing_table.rowCount()
+        self.casing_table.insertRow(row)
+        defaults = ["0"]*10
+        for col, val in enumerate(defaults):
+            self.casing_table.setItem(row, col, QTableWidgetItem(val))
 
-    def _remove_selected_row(self, model: QStandardItemModel, table: QTableView) -> None:
-        """Remove selected row from specified table"""
-        sel = table.selectionModel()
-        if sel.hasSelection():
-            row = sel.selectedRows()[0].row()
-            model.removeRow(row)
+    def _remove_selected_row(self, table):
+        selected = table.selectionModel().selectedRows()
+        for index in sorted(selected, key=lambda x: x.row(), reverse=True):
+            table.removeRow(index.row())
 
-    def load_data(self) -> None:
-        """
-        Load data from database into all tables
-        """
-        try:
-            # Load cement jobs
-            jobs = self.db.execute_query(
-                "SELECT * FROM cement_jobs ORDER BY date DESC"
-            ).fetchall()
-            
-            self.job_model.removeRows(0, self.job_model.rowCount())
+    def _load_data(self):
+        # Clear tables
+        self.job_table.setRowCount(0)
+        self.inv_table.setRowCount(0)
+        self.casing_table.setRowCount(0)
+
+        with self.db.get_session() as session:
+            # Load Cement Jobs
+            jobs = session.query(CementJob).order_by(CementJob.date.desc()).all()
             for job in jobs:
-                row = [
-                    QStandardItem(),
-                    QStandardItem(job['job_type']),
-                    QStandardItem(str(job['volume'])),
-                    QStandardItem(job['additives']),
-                    QStandardItem(str(job['mix_density'])),
-                    QStandardItem(str(job['pressure'])),
-                    QStandardItem(job['result']),
-                    QStandardItem(job['remarks'])
-                ]
-                
-                # Set date
-                date = QDate.fromString(job['date'], "yyyy-MM-dd")
-                row[0].setData(date, Qt.DisplayRole)
-                
-                for item in row:
-                    item.setEditable(True)
-                    
-                self.job_model.appendRow(row)
-            
-            # Load additives
-            additives = self.db.execute_query(
-                "SELECT * FROM additives_inventory ORDER BY product"
-            ).fetchall()
-            
-            self.inv_model.removeRows(0, self.inv_model.rowCount())
-            for additive in additives:
-                row = [
-                    QStandardItem(additive['product']),
-                    QStandardItem(additive['type']),
-                    QStandardItem(str(additive['received'])),
-                    QStandardItem(str(additive['used'])),
-                    QStandardItem(str(additive['stock'])),
-                    QStandardItem(additive['unit']),
-                    QStandardItem(additive['supplier']),
-                    QStandardItem(additive['batch_no'])
-                ]
-                
-                for item in row:
-                    item.setEditable(True)
-                    
-                self.inv_model.appendRow(row)
-            
-            # Load casing data
-            casings = self.db.execute_query(
-                "SELECT * FROM casing_data ORDER BY size"
-            ).fetchall()
-            
-            self.casing_model.removeRows(0, self.casing_model.rowCount())
-            for casing in casings:
-                row = [
-                    QStandardItem(str(casing['size'])),
-                    QStandardItem(str(casing['from_depth'])),
-                    QStandardItem(str(casing['to_depth'])),
-                    QStandardItem(casing['grade']),
-                    QStandardItem(str(casing['weight'])),
-                    QStandardItem(casing['thread']),
-                    QStandardItem(str(casing['shoe_tvd'])),
-                    QStandardItem(str(casing['burst_pressure'])),
-                    QStandardItem(str(casing['collapse_pressure'])),
-                    QStandardItem(str(casing['centralizers']))
-                ]
-                
-                for item in row:
-                    item.setEditable(True)
-                    
-                self.casing_model.appendRow(row)
-                
-        except Exception as e:
-            print(f"Error loading data: {str(e)}")
+                row = self.job_table.rowCount()
+                self.job_table.insertRow(row)
+                self.job_table.setItem(row, 0, QTableWidgetItem(job.date.strftime("%Y-%m-%d") if job.date else ""))
+                self.job_table.setItem(row, 1, QTableWidgetItem(job.job_type or ""))
+                self.job_table.setItem(row, 2, QTableWidgetItem(str(job.volume or 0)))
+                self.job_table.setItem(row, 3, QTableWidgetItem(job.additives or ""))
+                self.job_table.setItem(row, 4, QTableWidgetItem(str(job.mix_density or 0)))
+                self.job_table.setItem(row, 5, QTableWidgetItem(str(job.pressure or 0)))
+                self.job_table.setItem(row, 6, QTableWidgetItem(job.result or ""))
+                self.job_table.setItem(row, 7, QTableWidgetItem(job.remarks or ""))
 
-    def save_data(self) -> None:
-        """
-        Save all changes to database
-        """
+            # Load Additives Inventory
+            additives = session.query(AdditiveInventory).order_by(AdditiveInventory.product).all()
+            for item in additives:
+                row = self.inv_table.rowCount()
+                self.inv_table.insertRow(row)
+                self.inv_table.setItem(row, 0, QTableWidgetItem(item.product or ""))
+                self.inv_table.setItem(row, 1, QTableWidgetItem(item.type or ""))
+                self.inv_table.setItem(row, 2, QTableWidgetItem(str(item.received or 0)))
+                self.inv_table.setItem(row, 3, QTableWidgetItem(str(item.used or 0)))
+                self.inv_table.setItem(row, 4, QTableWidgetItem(str(item.stock or 0)))
+                self.inv_table.setItem(row, 5, QTableWidgetItem(item.unit or ""))
+                self.inv_table.setItem(row, 6, QTableWidgetItem(item.supplier or ""))
+                self.inv_table.setItem(row, 7, QTableWidgetItem(item.batch_no or ""))
+
+            # Load Casing Data
+            casings = session.query(CasingData).order_by(CasingData.size).all()
+            for item in casings:
+                row = self.casing_table.rowCount()
+                self.casing_table.insertRow(row)
+                self.casing_table.setItem(row, 0, QTableWidgetItem(str(item.size or 0)))
+                self.casing_table.setItem(row, 1, QTableWidgetItem(str(item.from_depth or 0)))
+                self.casing_table.setItem(row, 2, QTableWidgetItem(str(item.to_depth or 0)))
+                self.casing_table.setItem(row, 3, QTableWidgetItem(item.grade or ""))
+                self.casing_table.setItem(row, 4, QTableWidgetItem(str(item.weight or 0)))
+                self.casing_table.setItem(row, 5, QTableWidgetItem(item.thread or ""))
+                self.casing_table.setItem(row, 6, QTableWidgetItem(str(item.shoe_tvd or 0)))
+                self.casing_table.setItem(row, 7, QTableWidgetItem(str(item.burst_pressure or 0)))
+                self.casing_table.setItem(row, 8, QTableWidgetItem(str(item.collapse_pressure or 0)))
+                self.casing_table.setItem(row, 9, QTableWidgetItem(str(item.centralizers or 0)))
+
+    def _save(self):
         try:
-            # Begin transaction
-            self.db.execute_query("BEGIN TRANSACTION")
-            
-            # Clear existing records
-            self.db.execute_query("DELETE FROM cement_jobs")
-            self.db.execute_query("DELETE FROM additives_inventory")
-            self.db.execute_query("DELETE FROM casing_data")
-            
-            # Save cement jobs
-            for row in range(self.job_model.rowCount()):
-                record = {
-                    'date': self.job_model.item(row, 0).data(Qt.DisplayRole).toString("yyyy-MM-dd"),
-                    'job_type': self.job_model.item(row, 1).text(),
-                    'volume': float(self.job_model.item(row, 2).text()),
-                    'additives': self.job_model.item(row, 3).text(),
-                    'mix_density': float(self.job_model.item(row, 4).text()),
-                    'pressure': float(self.job_model.item(row, 5).text()),
-                    'result': self.job_model.item(row, 6).text(),
-                    'remarks': self.job_model.item(row, 7).text()
-                }
-                
-                self.db.execute_query(
-                    """INSERT INTO cement_jobs 
-                    (date, job_type, volume, additives, mix_density, pressure, result, remarks)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    tuple(record.values())
-                )
-            
-            # Save additives
-            for row in range(self.inv_model.rowCount()):
-                record = {
-                    'product': self.inv_model.item(row, 0).text(),
-                    'type': self.inv_model.item(row, 1).text(),
-                    'received': float(self.inv_model.item(row, 2).text()),
-                    'used': float(self.inv_model.item(row, 3).text()),
-                    'stock': float(self.inv_model.item(row, 4).text()),
-                    'unit': self.inv_model.item(row, 5).text(),
-                    'supplier': self.inv_model.item(row, 6).text(),
-                    'batch_no': self.inv_model.item(row, 7).text()
-                }
-                
-                self.db.execute_query(
-                    """INSERT INTO additives_inventory 
-                    (product, type, received, used, stock, unit, supplier, batch_no)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    tuple(record.values())
-                )
-            
-            # Save casing data
-            for row in range(self.casing_model.rowCount()):
-                record = {
-                    'size': float(self.casing_model.item(row, 0).text()),
-                    'from_depth': float(self.casing_model.item(row, 1).text()),
-                    'to_depth': float(self.casing_model.item(row, 2).text()),
-                    'grade': self.casing_model.item(row, 3).text(),
-                    'weight': float(self.casing_model.item(row, 4).text()),
-                    'thread': self.casing_model.item(row, 5).text(),
-                    'shoe_tvd': float(self.casing_model.item(row, 6).text()),
-                    'burst_pressure': float(self.casing_model.item(row, 7).text()),
-                    'collapse_pressure': float(self.casing_model.item(row, 8).text()),
-                    'centralizers': int(self.casing_model.item(row, 9).text())
-                }
-                
-                self.db.execute_query(
-                    """INSERT INTO casing_data 
-                    (size, from_depth, to_depth, grade, weight, thread, shoe_tvd, 
-                     burst_pressure, collapse_pressure, centralizers)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    tuple(record.values())
-                )
-            
-            # Commit transaction
-            self.db.execute_query("COMMIT")
-            
-        except Exception as e:
-            self.db.execute_query("ROLLBACK")
-            print(f"Error saving data: {str(e)}")
-            raise
+            with self.db.get_session() as session:
+                # Clear old data
+                session.query(CementJob).delete()
+                session.query(AdditiveInventory).delete()
+                session.query(CasingData).delete()
 
-    def clear_tables(self) -> None:
-        """Clear all tables"""
-        self.job_model.removeRows(0, self.job_model.rowCount())
-        self.inv_model.removeRows(0, self.inv_model.rowCount())
-        self.casing_model.removeRows(0, self.casing_model.rowCount())
+                # Save Cement Jobs
+                for row in range(self.job_table.rowCount()):
+                    date_str = self.job_table.item(row, 0).text()
+                    job = CementJob(
+                        date=QDate.fromString(date_str, "yyyy-MM-dd").toPython() if date_str else None,
+                        job_type=self.job_table.item(row, 1).text(),
+                        volume=float(self.job_table.item(row, 2).text() or 0),
+                        additives=self.job_table.item(row, 3).text(),
+                        mix_density=float(self.job_table.item(row, 4).text() or 0),
+                        pressure=float(self.job_table.item(row, 5).text() or 0),
+                        result=self.job_table.item(row, 6).text(),
+                        remarks=self.job_table.item(row, 7).text()
+                    )
+                    session.add(job)
+
+                # Save Additives Inventory
+                for row in range(self.inv_table.rowCount()):
+                    item = AdditiveInventory(
+                        product=self.inv_table.item(row, 0).text(),
+                        type=self.inv_table.item(row, 1).text(),
+                        received=float(self.inv_table.item(row, 2).text() or 0),
+                        used=float(self.inv_table.item(row, 3).text() or 0),
+                        stock=float(self.inv_table.item(row, 4).text() or 0),
+                        unit=self.inv_table.item(row, 5).text(),
+                        supplier=self.inv_table.item(row, 6).text(),
+                        batch_no=self.inv_table.item(row, 7).text()
+                    )
+                    session.add(item)
+
+                # Save Casing Data
+                for row in range(self.casing_table.rowCount()):
+                    casing = CasingData(
+                        size=float(self.casing_table.item(row, 0).text() or 0),
+                        from_depth=float(self.casing_table.item(row, 1).text() or 0),
+                        to_depth=float(self.casing_table.item(row, 2).text() or 0),
+                        grade=self.casing_table.item(row, 3).text(),
+                        weight=float(self.casing_table.item(row, 4).text() or 0),
+                        thread=self.casing_table.item(row, 5).text(),
+                        shoe_tvd=float(self.casing_table.item(row, 6).text() or 0),
+                        burst_pressure=float(self.casing_table.item(row, 7).text() or 0),
+                        collapse_pressure=float(self.casing_table.item(row, 8).text() or 0),
+                        centralizers=int(self.casing_table.item(row, 9).text() or 0)
+                    )
+                    session.add(casing)
+
+                session.commit()
+            QMessageBox.information(self, "Saved", "All data saved successfully.")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Error saving data: {e}")
+
+class CementAdditivesModule(ModuleBase):
+    DISPLAY_NAME = "Cement & Additives"
+
+    def __init__(self, db, parent=None):
+        super().__init__(db, parent)
+        self.widget = CementAdditivesWidget(self.db)
+
+    def get_widget(self):
+        return self.widget

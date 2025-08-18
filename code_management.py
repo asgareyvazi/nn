@@ -1,147 +1,120 @@
-# File: modules/code_management.py
-# Purpose: Full CRUD for MainCode and SubCode + helper API for other modules
-# Next: modules/daily_report.py
 
-from PySide2.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QPushButton,
-    QMessageBox, QTableView, QComboBox
-)
-from PySide2.QtCore import Qt, QAbstractTableModel, QModelIndex
-from .base import BaseModule
-from models import MainCode, SubCode
+# =========================================
+# file: nikan_drill_master/modules/code_management.py
+# =========================================
+from __future__ import annotations
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QTextEdit, QMessageBox
+from sqlalchemy.orm import Session
+from database import session_scope
+from modules.base import ModuleBase
+from models import CodeMain, CodeSub
 
-class MainCodeTableModel(QAbstractTableModel):
-    HEADERS = ['ID', 'Code', 'Name', 'Description']
-    def __init__(self, db):
-        super().__init__(); self.db = db; self.rows = []; self.load()
-    def load(self):
-        with self.db.get_session() as s:
-            self.rows = s.query(MainCode).order_by(MainCode.code).all()
-        self.layoutChanged.emit()
-    def rowCount(self, parent=QModelIndex()): return len(self.rows)
-    def columnCount(self, parent=QModelIndex()): return len(self.HEADERS)
-    def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid(): return None
-        mc = self.rows[index.row()]; c = index.column()
-        if role == Qt.DisplayRole:
-            return [mc.id, mc.code, mc.name, (mc.description or '')][:][c]
-    def headerData(self, s, o, r=Qt.DisplayRole):
-        return self.HEADERS[s] if (r==Qt.DisplayRole and o==1) else None
+class CodeManagementModule(ModuleBase):
+    def __init__(self, SessionLocal, parent=None):
+        super().__init__(SessionLocal, parent)
+        self._setup_ui()
+        self.refresh()
 
-class SubCodeTableModel(QAbstractTableModel):
-    HEADERS = ['ID', 'MainCode', 'Code', 'Name', 'Description']
-    def __init__(self, db):
-        super().__init__(); self.db = db; self.rows = []; self.load()
-    def load(self):
-        with self.db.get_session() as s:
-            self.rows = s.query(SubCode).join(MainCode).order_by(MainCode.code, SubCode.code).all()
-        self.layoutChanged.emit()
-    def rowCount(self, parent=QModelIndex()): return len(self.rows)
-    def columnCount(self, parent=QModelIndex()): return len(self.HEADERS)
-    def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid(): return None
-        sc = self.rows[index.row()]; c = index.column()
-        if role == Qt.DisplayRole:
-            if c==0: return sc.id
-            if c==1: return sc.main_code.code if sc.main_code else ''
-            if c==2: return sc.code
-            if c==3: return sc.name
-            if c==4: return sc.description or ''
-    def headerData(self, s, o, r=Qt.DisplayRole):
-        return self.HEADERS[s] if (r==Qt.DisplayRole and o==1) else None
+    def _setup_ui(self):
+        lay = QVBoxLayout(self)
+        # Main codes table
+        self.tbl_main = QTableWidget(0, 4)
+        self.tbl_main.setHorizontalHeaderLabels(["Phase", "Code", "Name", "Description"])
+        # Sub codes table
+        self.tbl_sub = QTableWidget(0, 4)
+        self.tbl_sub.setHorizontalHeaderLabels(["Main Code ID", "Sub-Code", "Name", "Description"])
 
-class CodeManagementWidget(QWidget):
-    def __init__(self, db, parent=None):
-        super().__init__(parent); self.db=db
-        self._build_ui(); self._load_models()
+        btns = QHBoxLayout()
+        btn_add_main = QPushButton("Add Main"); btn_del_main = QPushButton("Delete Main")
+        btn_add_sub = QPushButton("Add Sub"); btn_del_sub = QPushButton("Delete Sub")
+        btn_save = QPushButton("Save All")
 
-    def _build_ui(self):
-        main = QVBoxLayout(self)
+        btn_add_main.clicked.connect(self._add_main)
+        btn_del_main.clicked.connect(self._del_main)
+        btn_add_sub.clicked.connect(self._add_sub)
+        btn_del_sub.clicked.connect(self._del_sub)
+        btn_save.clicked.connect(self._save)
 
-        # Main code form
-        frm_main = QFormLayout()
-        self.le_main_code = QLineEdit(); self.le_main_name = QLineEdit(); self.le_main_desc = QLineEdit()
-        btn_add_main = QPushButton("Add Main Code"); btn_add_main.clicked.connect(self._add_main)
-        frm_main.addRow("Main Code", self.le_main_code)
-        frm_main.addRow("Name", self.le_main_name)
-        frm_main.addRow("Description", self.le_main_desc)
-        frm_main.addRow(btn_add_main)
+        btns.addWidget(btn_add_main); btns.addWidget(btn_del_main)
+        btns.addWidget(btn_add_sub); btns.addWidget(btn_del_sub)
+        btns.addStretch(1); btns.addWidget(btn_save)
 
-        # Sub code form
-        frm_sub = QFormLayout()
-        self.cb_sub_main = QComboBox(); self.le_sub_code = QLineEdit(); self.le_sub_name = QLineEdit(); self.le_sub_desc = QLineEdit()
-        btn_add_sub = QPushButton("Add Sub Code"); btn_add_sub.clicked.connect(self._add_sub)
-        frm_sub.addRow("Parent Main", self.cb_sub_main)
-        frm_sub.addRow("Sub Code", self.le_sub_code)
-        frm_sub.addRow("Name", self.le_sub_name)
-        frm_sub.addRow("Description", self.le_sub_desc)
-        frm_sub.addRow(btn_add_sub)
+        lay.addLayout(btns)
+        lay.addWidget(self.tbl_main)
+        lay.addWidget(self.tbl_sub)
 
-        hl = QHBoxLayout(); hl.addLayout(frm_main); hl.addLayout(frm_sub)
-        main.addLayout(hl)
+    def refresh(self):
+        with session_scope(self.SessionLocal) as s:
+            mains = s.query(CodeMain).order_by(CodeMain.phase, CodeMain.code).all()
+            subs = s.query(CodeSub).order_by(CodeSub.main_id, CodeSub.sub_code).all()
 
-        # Tables & actions
-        self.tbl_main = QTableView(); self.tbl_sub = QTableView()
-        btn_refresh = QPushButton("Refresh"); btn_refresh.clicked.connect(self._load_models)
-        btn_delete_main = QPushButton("Delete Selected Main"); btn_delete_main.clicked.connect(self._delete_selected_main)
-        btn_delete_sub = QPushButton("Delete Selected Sub"); btn_delete_sub.clicked.connect(self._delete_selected_sub)
-        actions = QHBoxLayout(); actions.addWidget(btn_refresh); actions.addWidget(btn_delete_main); actions.addWidget(btn_delete_sub)
-        main.addLayout(actions); main.addWidget(self.tbl_main); main.addWidget(self.tbl_sub)
+        self.tbl_main.setRowCount(0)
+        for m in mains:
+            r = self.tbl_main.rowCount(); self.tbl_main.insertRow(r)
+            self.tbl_main.setItem(r, 0, QTableWidgetItem(m.phase))
+            self.tbl_main.setItem(r, 1, QTableWidgetItem(m.code))
+            self.tbl_main.setItem(r, 2, QTableWidgetItem(m.name))
+            self.tbl_main.setItem(r, 3, QTableWidgetItem(m.description or ""))
 
-    def _load_models(self):
-        with self.db.get_session() as s:
-            mains = s.query(MainCode).order_by(MainCode.code).all()
-        self.cb_sub_main.clear()
-        for m in mains: self.cb_sub_main.addItem(f"{m.code} - {m.name}", m.id)
-        self.model_main = MainCodeTableModel(self.db)
-        self.model_sub = SubCodeTableModel(self.db)
-        self.tbl_main.setModel(self.model_main); self.tbl_sub.setModel(self.model_sub)
+        self.tbl_sub.setRowCount(0)
+        for s in subs:
+            r = self.tbl_sub.rowCount(); self.tbl_sub.insertRow(r)
+            self.tbl_sub.setItem(r, 0, QTableWidgetItem(str(s.main_id)))
+            self.tbl_sub.setItem(r, 1, QTableWidgetItem(s.sub_code))
+            self.tbl_sub.setItem(r, 2, QTableWidgetItem(s.name))
+            self.tbl_sub.setItem(r, 3, QTableWidgetItem(s.description or ""))
 
     def _add_main(self):
-        code = self.le_main_code.text().strip(); name = self.le_main_name.text().strip(); desc = self.le_main_desc.text().strip()
-        if not code or not name: return QMessageBox.warning(self, "Validation", "Main code and name required")
-        with self.db.get_session() as s:
-            if s.query(MainCode).filter_by(code=code).first():
-                return QMessageBox.warning(self, "Exists", "Main code already exists")
-            s.add(MainCode(code=code, name=name, description=desc))
-        self.le_main_code.clear(); self.le_main_name.clear(); self.le_main_desc.clear(); self._load_models()
+        r = self.tbl_main.rowCount(); self.tbl_main.insertRow(r)
+
+    def _del_main(self):
+        r = self.tbl_main.currentRow()
+        if r < 0: return
+        phase = self.tbl_main.item(r, 0).text() if self.tbl_main.item(r, 0) else ""
+        code = self.tbl_main.item(r, 1).text() if self.tbl_main.item(r, 1) else ""
+        with session_scope(self.SessionLocal) as s:
+            m = s.query(CodeMain).filter(CodeMain.phase==phase, CodeMain.code==code).one_or_none()
+            if m: s.delete(m)
+        self.refresh()
 
     def _add_sub(self):
-        idx = self.cb_sub_main.currentIndex()
-        if idx < 0: return QMessageBox.warning(self, "Validation", "Select parent main code")
-        main_id = self.cb_sub_main.currentData()
-        code = self.le_sub_code.text().strip(); name = self.le_sub_name.text().strip(); desc = self.le_sub_desc.text().strip()
-        if not code or not name: return QMessageBox.warning(self, "Validation", "Sub code and name required")
-        with self.db.get_session() as s:
-            s.add(SubCode(main_code_id=main_id, code=code, name=name, description=desc))
-        self.le_sub_code.clear(); self.le_sub_name.clear(); self.le_sub_desc.clear(); self._load_models()
+        r = self.tbl_sub.rowCount(); self.tbl_sub.insertRow(r)
 
-    def _delete_selected_main(self):
-        sel = self.tbl_main.selectionModel().selectedRows()
-        if not sel: return QMessageBox.information(self, "Select", "Select a main row")
-        mc = self.model_main.rows[sel[0].row()]
-        with self.db.get_session() as s:
-            obj = s.query(MainCode).get(mc.id)
-            if obj: s.delete(obj)
-        self._load_models()
+    def _del_sub(self):
+        r = self.tbl_sub.currentRow()
+        if r < 0: return
+        try:
+            main_id = int(self.tbl_sub.item(r, 0).text())
+        except Exception:
+            main_id = -1
+        sub_code = self.tbl_sub.item(r, 1).text() if self.tbl_sub.item(r, 1) else ""
+        with session_scope(self.SessionLocal) as s:
+            sub = s.query(CodeSub).filter(CodeSub.main_id==main_id, CodeSub.sub_code==sub_code).one_or_none()
+            if sub: s.delete(sub)
+        self.refresh()
 
-    def _delete_selected_sub(self):
-        sel = self.tbl_sub.selectionModel().selectedRows()
-        if not sel: return QMessageBox.information(self, "Select", "Select a sub row")
-        sc = self.model_sub.rows[sel[0].row()]
-        with self.db.get_session() as s:
-            obj = s.query(SubCode).get(sc.id)
-            if obj: s.delete(obj)
-        self._load_models()
-
-class CodeManagementModule(BaseModule):
-    DISPLAY_NAME = "Code Management"
-    def __init__(self, db, parent=None):
-        super().__init__(db, parent); self.widget = CodeManagementWidget(self.db)
-    def get_widget(self): return self.widget
-    def get_main_codes(self):
-        with self.db.get_session() as s:
-            return s.query(MainCode).order_by(MainCode.code).all()
-    def get_sub_codes_for(self, main_code_id):
-        with self.db.get_session() as s:
-            return s.query(SubCode).filter_by(main_code_id=main_code_id).order_by(SubCode.code).all()
+    def _save(self):
+        with session_scope(self.SessionLocal) as s:
+            s.query(CodeSub).delete()
+            s.query(CodeMain).delete()
+            s.flush()
+            for r in range(self.tbl_main.rowCount()):
+                phase = (self.tbl_main.item(r, 0).text() if self.tbl_main.item(r,0) else "").strip()
+                code = (self.tbl_main.item(r, 1).text() if self.tbl_main.item(r,1) else "").strip()
+                name = (self.tbl_main.item(r, 2).text() if self.tbl_main.item(r,2) else "").strip()
+                desc = (self.tbl_main.item(r, 3).text() if self.tbl_main.item(r,3) else "").strip() or None
+                if phase and code and name:
+                    s.add(CodeMain(phase=phase, code=code, name=name, description=desc))
+            s.flush()
+            for r in range(self.tbl_sub.rowCount()):
+                try:
+                    main_id = int(self.tbl_sub.item(r, 0).text())
+                except Exception:
+                    main_id = None
+                sub_code = (self.tbl_sub.item(r, 1).text() if self.tbl_sub.item(r,1) else "").strip()
+                name = (self.tbl_sub.item(r, 2).text() if self.tbl_sub.item(r,2) else "").strip()
+                desc = (self.tbl_sub.item(r, 3).text() if self.tbl_sub.item(r,3) else "").strip() or None
+                if main_id and sub_code and name:
+                    s.add(CodeSub(main_id=main_id, sub_code=sub_code, name=name, description=desc))
+        QMessageBox.information(self, "Saved", "Codes ذخیره شد")
+        self.refresh()

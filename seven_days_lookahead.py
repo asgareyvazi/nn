@@ -1,7 +1,7 @@
 # File: modules/seven_days_lookahead.py
 # Purpose: 7-day lookahead planner with auto-fill from previous week and export-ready table.
 
-from PySide2.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QMessageBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QHBoxLayout, QMessageBox
 from .base import BaseModule
 
 class SevenDaysLookaheadWidget(QWidget):

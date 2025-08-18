@@ -1,215 +1,160 @@
-# File: modules/well_info.py
-# Purpose: Full Well Info editor (create/edit Company, Project, Well, Section) with hierarchy controls.
 
-from PySide2.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QComboBox,
-    QSpinBox, QDoubleSpinBox, QPushButton, QMessageBox, QGroupBox, QDateEdit
-)
-from PySide2.QtCore import QDate
-from .base import BaseModule
-from models import Company, Project, Well, Section
-from datetime import date
+# =========================================
+# file: nikan_drill_master/modules/well_info.py
+# =========================================
+from __future__ import annotations
+from PySide6.QtWidgets import QFormLayout, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QDateEdit, QWidget, QVBoxLayout, QPushButton, QMessageBox
+from PySide6.QtCore import QDate
+from sqlalchemy.orm import Session
+from database import session_scope
+from models import Company, Project, Well
+from modules.base import ModuleBase
 
-class WellInfoWidget(QWidget):
-    def __init__(self, db, parent=None):
-        super().__init__(parent); self.db=db
-        self._build(); self._load_companies()
+class WellInfoModule(ModuleBase):
+    def __init__(self, SessionLocal, parent=None):
+        super().__init__(SessionLocal, parent)
+        self._setup_ui()
 
-    def _build(self):
-        root = QVBoxLayout(self)
+    def _setup_ui(self):
+        lay = QVBoxLayout(self)
+        self.form = QFormLayout()
+        self.company = QLineEdit()
+        self.project = QLineEdit()
+        self.well_name = QLineEdit()
+        self.rig_name = QLineEdit()
+        self.operator = QLineEdit()
+        self.field = QLineEdit()
 
-        # Company / Project selectors
-        sel_box = QGroupBox("Company / Project / Well / Section")
-        sel_l = QHBoxLayout(sel_box)
-        self.cb_company = QComboBox(); self.cb_project = QComboBox(); self.cb_well = QComboBox(); self.cb_section = QComboBox()
-        for w in (self.cb_company, self.cb_project, self.cb_well, self.cb_section): sel_l.addWidget(w)
-        self.cb_company.currentIndexChanged.connect(self._on_company_changed)
-        self.cb_project.currentIndexChanged.connect(self._on_project_changed)
-        self.cb_well.currentIndexChanged.connect(self._on_well_changed)
-        root.addWidget(sel_box)
+        self.well_type = _combo(self, ["", "Onshore", "Offshore"])
+        self.rig_type = _combo(self, ["", "Land", "Jackup", "SemiSub", "Drillship"])
+        self.well_shape = _combo(self, ["", "Vertical", "Deviated", "Horizontal"])
+        self.derrick_height = QSpinBox(); self.derrick_height.setRange(0, 3000)
 
-        # Add buttons
-        btns = QHBoxLayout()
-        self.btn_add_company = QPushButton("Add Company"); self.btn_add_project=QPushButton("Add Project")
-        self.btn_add_well=QPushButton("Add Well"); self.btn_add_section=QPushButton("Add Section")
-        for b in (self.btn_add_company, self.btn_add_project, self.btn_add_well, self.btn_add_section): btns.addWidget(b)
-        root.addLayout(btns)
-        self.btn_add_company.clicked.connect(self._add_company)
-        self.btn_add_project.clicked.connect(self._add_project)
-        self.btn_add_well.clicked.connect(self._add_well)
-        self.btn_add_section.clicked.connect(self._add_section)
+        self.gle = QDoubleSpinBox(); self.gle.setRange(-10000, 10000); self.gle.setDecimals(2)
+        self.rte = QDoubleSpinBox(); self.rte.setRange(-10000, 10000); self.rte.setDecimals(2)
+        self.msl = QDoubleSpinBox(); self.msl.setRange(-10000, 10000); self.msl.setDecimals(2)
+        self.kop1 = QDoubleSpinBox(); self.kop1.setRange(-10000, 10000); self.kop1.setDecimals(2)
+        self.kop2 = QDoubleSpinBox(); self.kop2.setRange(-10000, 10000); self.kop2.setDecimals(2)
 
-        # Well form
-        self.frm = QFormLayout()
-        self.le_well_name = QLineEdit(); self.le_rig_name = QLineEdit(); self.le_operator = QLineEdit(); self.le_field = QLineEdit()
-        self.cb_well_type = QComboBox(); self.cb_well_type.addItems(["Onshore","Offshore"])
-        self.cb_rig_type = QComboBox(); self.cb_rig_type.addItems(["Land","Jackup","SemiSub","Others"])
-        self.cb_shape = QComboBox(); self.cb_shape.addItems(["Vertical","Deviated","Horizontal"])
+        self.latitude = QLineEdit(); self.longitude = QLineEdit()
+        self.northing = QDoubleSpinBox(); self.northing.setRange(-1e9, 1e9); self.northing.setDecimals(3)
+        self.easting = QDoubleSpinBox(); self.easting.setRange(-1e9, 1e9); self.easting.setDecimals(3)
 
-        self.sp_derrick = QSpinBox(); self.sp_derrick.setRange(0, 100000)
+        self.hole_size = QDoubleSpinBox(); self.hole_size.setRange(0, 100); self.hole_size.setDecimals(2)
+        self.est_final_depth = QDoubleSpinBox(); self.est_final_depth.setRange(0, 1e6); self.est_final_depth.setDecimals(1)
+        self.offshore_water_depth = QDoubleSpinBox(); self.offshore_water_depth.setRange(0, 1e5); self.offshore_water_depth.setDecimals(1)
 
-        self.sp_gle = QDoubleSpinBox(); self.sp_gle.setDecimals(2); self.sp_gle.setRange(-10000, 10000)
-        self.sp_rte = QDoubleSpinBox(); self.sp_rte.setDecimals(2); self.sp_rte.setRange(-10000, 10000)
-        self.sp_msl = QDoubleSpinBox(); self.sp_msl.setDecimals(2); self.sp_msl.setRange(-10000, 10000)
-        self.sp_kop1 = QDoubleSpinBox(); self.sp_kop2 = QDoubleSpinBox()
+        self.spud_date = QDateEdit(); self.spud_date.setCalendarPopup(True)
+        self.start_hole_date = QDateEdit(); self.start_hole_date.setCalendarPopup(True)
+        self.rig_move_date = QDateEdit(); self.rig_move_date.setCalendarPopup(True)
 
-        self.le_lat = QLineEdit(); self.le_lon = QLineEdit(); self.le_northing = QLineEdit(); self.le_easting = QLineEdit()
+        self.supervisor_day = QLineEdit(); self.supervisor_night = QLineEdit()
+        self.toolpusher_day = QLineEdit(); self.toolpusher_night = QLineEdit()
+        self.operation_manager = QLineEdit()
+        self.geologist1 = QLineEdit(); self.geologist2 = QLineEdit()
+        self.client_rep = QLineEdit()
 
-        self.sp_hole_in = QDoubleSpinBox(); self.sp_hole_in.setRange(0, 60); self.sp_final_md = QDoubleSpinBox(); self.sp_final_md.setRange(0, 50000)
-        self.sp_wd = QDoubleSpinBox(); self.sp_wd.setRange(0, 5000)
+        self.objectives = QTextEdit()
 
-        self.dt_spud = QDateEdit(); self.dt_spud.setCalendarPopup(True)
-        self.dt_start_hole = QDateEdit(); self.dt_start_hole.setCalendarPopup(True)
-        self.dt_rig_move = QDateEdit(); self.dt_rig_move.setCalendarPopup(True)
-        for d in (self.dt_spud, self.dt_start_hole, self.dt_rig_move): d.setDate(QDate.currentDate())
+        f = self.form
+        f.addRow("Company", self.company)
+        f.addRow("Project", self.project)
+        f.addRow("Well Name", self.well_name)
+        f.addRow("Rig Name", self.rig_name)
+        f.addRow("Operator", self.operator)
+        f.addRow("Field", self.field)
+        f.addRow("Well Type", self.well_type)
+        f.addRow("Rig Type", self.rig_type)
+        f.addRow("Well Shape", self.well_shape)
+        f.addRow("Derrick Height (ft)", self.derrick_height)
+        f.addRow("GLE", self.gle); f.addRow("RTE", self.rte); f.addRow("MSL", self.msl)
+        f.addRow("KOP1", self.kop1); f.addRow("KOP2", self.kop2)
+        f.addRow("Latitude", self.latitude); f.addRow("Longitude", self.longitude)
+        f.addRow("Northing", self.northing); f.addRow("Easting", self.easting)
+        f.addRow("Hole Size (in)", self.hole_size)
+        f.addRow("Est. Final Depth MD (m)", self.est_final_depth)
+        f.addRow("Offshore Water Depth (m)", self.offshore_water_depth)
+        f.addRow("Spud Date", self.spud_date)
+        f.addRow("Start Hole Date", self.start_hole_date)
+        f.addRow("Rig Move Date", self.rig_move_date)
+        f.addRow("Supervisors (Day/Night)", _row2(self.supervisor_day, self.supervisor_night))
+        f.addRow("Toolpusher (Day/Night)", _row2(self.toolpusher_day, self.toolpusher_night))
+        f.addRow("Operation Manager", self.operation_manager)
+        f.addRow("Geologist (1/2)", _row2(self.geologist1, self.geologist2))
+        f.addRow("Client Rep", self.client_rep)
+        f.addRow("Objectives", self.objectives)
 
-        self.frm.addRow("Well Name", self.le_well_name)
-        self.frm.addRow("Rig Name", self.le_rig_name)
-        self.frm.addRow("Operator", self.le_operator)
-        self.frm.addRow("Field", self.le_field)
-        self.frm.addRow("Well Type", self.cb_well_type)
-        self.frm.addRow("Rig Type", self.cb_rig_type)
-        self.frm.addRow("Well Shape", self.cb_shape)
-        self.frm.addRow("Derrick Height (ft)", self.sp_derrick)
-        self.frm.addRow("GLE", self.sp_gle); self.frm.addRow("RTE", self.sp_rte); self.frm.addRow("MSL", self.sp_msl)
-        self.frm.addRow("KOP1", self.sp_kop1); self.frm.addRow("KOP2", self.sp_kop2)
-        self.frm.addRow("Latitude", self.le_lat); self.frm.addRow("Longitude", self.le_lon)
-        self.frm.addRow("Northing", self.le_northing); self.frm.addRow("Easting", self.le_easting)
-        self.frm.addRow("Hole Size (in)", self.sp_hole_in)
-        self.frm.addRow("Estimated Final Depth MD (m)", self.sp_final_md)
-        self.frm.addRow("Offshore Water Depth (m)", self.sp_wd)
-        self.frm.addRow("Spud Date", self.dt_spud); self.frm.addRow("Start Hole Date", self.dt_start_hole); self.frm.addRow("Rig Move Date", self.dt_rig_move)
+        save_btn = QPushButton("Save / Upsert")
+        save_btn.clicked.connect(self._save)
+        lay.addLayout(self.form); lay.addWidget(save_btn)
 
-        root.addLayout(self.frm)
-        act = QHBoxLayout(); self.btn_save = QPushButton("Save Well"); self.btn_delete = QPushButton("Delete Well")
-        self.btn_save.clicked.connect(self._save_well); self.btn_delete.clicked.connect(self._delete_well)
-        act.addWidget(self.btn_save); act.addWidget(self.btn_delete); root.addLayout(act)
-
-    def _load_companies(self):
-        self.cb_company.clear()
-        with self.db.get_session() as s:
-            rows = s.query(Company).order_by(Company.name).all()
-        for r in rows: self.cb_company.addItem(r.name, r.id)
-        self._on_company_changed()
-
-    def _on_company_changed(self):
-        self.cb_project.clear()
-        cid = self.cb_company.currentData()
-        if cid is None: return
-        with self.db.get_session() as s:
-            pros = s.query(Project).filter_by(company_id=cid).order_by(Project.name).all()
-        for p in pros: self.cb_project.addItem(p.name, p.id)
-        self._on_project_changed()
-
-    def _on_project_changed(self):
-        self.cb_well.clear()
-        pid = self.cb_project.currentData()
-        if pid is None: return
-        with self.db.get_session() as s:
-            wells = s.query(Well).filter_by(project_id=pid).order_by(Well.name).all()
-        for w in wells: self.cb_well.addItem(w.name, w.id)
-        self._on_well_changed()
-
-    def _on_well_changed(self):
-        self.cb_section.clear()
-        wid = self.cb_well.currentData()
-        if wid is None: return
-        with self.db.get_session() as s:
-            secs = s.query(Section).filter_by(well_id=wid).order_by(Section.name).all()
-            w = s.query(Well).get(wid)
-        for sc in secs: self.cb_section.addItem(sc.name, sc.id)
-        # fill form
-        if w:
-            self.le_well_name.setText(w.name or '')
-            self.le_rig_name.setText(w.rig_name or '')
-            self.le_operator.setText(w.operator or '')
-            self.le_field.setText(w.project.field if w.project and w.project.field else '')
-            self.cb_well_type.setCurrentIndex(0 if (w.well_type or '').lower()=="onshore" else 1)
-            self.cb_rig_type.setCurrentText(w.rig_type or "Land")
-            self.cb_shape.setCurrentText(w.well_shape or "Vertical")
-            self.sp_derrick.setValue(w.derrick_height_ft or 0)
-            self.sp_gle.setValue(w.gle or 0); self.sp_rte.setValue(w.rte or 0); self.sp_msl.setValue(w.msl or 0)
-            self.sp_kop1.setValue(w.kop1 or 0); self.sp_kop2.setValue(w.kop2 or 0)
-            self.le_lat.setText(w.lat or ''); self.le_lon.setText(w.lon or '')
-            self.le_northing.setText(w.northing or ''); self.le_easting.setText(w.easting or '')
-            self.sp_hole_in.setValue(w.hole_size_in or 0); self.sp_final_md.setValue(w.final_depth_md_m or 0)
-            self.sp_wd.setValue(w.offshore_water_depth_m or 0)
-            if w.spud_date: self.dt_spud.setDate(QDate(w.spud_date.year, w.spud_date.month, w.spud_date.day))
-            if w.start_hole_date: self.dt_start_hole.setDate(QDate(w.start_hole_date.year, w.start_hole_date.month, w.start_hole_date.day))
-            if w.rig_move_date: self.dt_rig_move.setDate(QDate(w.rig_move_date.year, w.rig_move_date.month, w.rig_move_date.day))
-
-    def _add_company(self):
-        name = self._quick_text("New Company Name")
-        if not name: return
-        with self.db.get_session() as s: s.add(Company(name=name))
-        self._load_companies()
-
-    def _add_project(self):
-        cid = self.cb_company.currentData()
-        if cid is None: return
-        name = self._quick_text("New Project Name")
-        if not name: return
-        with self.db.get_session() as s: s.add(Project(company_id=cid, name=name))
-        self._on_company_changed()
-
-    def _add_well(self):
-        pid = self.cb_project.currentData()
-        if pid is None: return
-        name = self._quick_text("New Well Name")
-        if not name: return
-        with self.db.get_session() as s: s.add(Well(project_id=pid, name=name))
-        self._on_project_changed()
-
-    def _add_section(self):
-        wid = self.cb_well.currentData()
-        if wid is None: return
-        name = self._quick_text("New Section Name")
-        if not name: return
-        with self.db.get_session() as s: s.add(Section(well_id=wid, name=name))
-        self._on_well_changed()
-
-    def _quick_text(self, title):
-        from PySide2.QtWidgets import QInputDialog
-        text, ok = QInputDialog.getText(self, title, "Enter text")
-        return text.strip() if ok and text.strip() else None
-
-    def _save_well(self):
-        wid = self.cb_well.currentData()
-        if wid is None: return
-        with self.db.get_session() as s:
-            w = s.query(Well).get(wid)
-            if not w: return
-            w.name = self.le_well_name.text().strip()
-            w.rig_name = self.le_rig_name.text().strip()
-            w.operator = self.le_operator.text().strip()
-            w.well_type = self.cb_well_type.currentText()
-            w.rig_type = self.cb_rig_type.currentText()
-            w.well_shape = self.cb_shape.currentText()
-            w.derrick_height_ft = self.sp_derrick.value()
-            w.gle = self.sp_gle.value(); w.rte = self.sp_rte.value(); w.msl = self.sp_msl.value()
-            w.kop1 = self.sp_kop1.value(); w.kop2 = self.sp_kop2.value()
-            w.lat = self.le_lat.text().strip(); w.lon = self.le_lon.text().strip()
-            w.northing = self.le_northing.text().strip(); w.easting = self.le_easting.text().strip()
-            w.hole_size_in = self.sp_hole_in.value(); w.final_depth_md_m = self.sp_final_md.value()
-            w.offshore_water_depth_m = self.sp_wd.value()
-            w.spud_date = self.dt_spud.date().toPython()
-            w.start_hole_date = self.dt_start_hole.date().toPython()
-            w.rig_move_date = self.dt_rig_move.date().toPython()
-        QMessageBox.information(self, "Saved", "Well info saved.")
-
-    def _delete_well(self):
-        wid = self.cb_well.currentData()
-        if wid is None: return
-        from PySide2.QtWidgets import QMessageBox
-        if QMessageBox.question(self, "Confirm", "Delete this well and all its data?") != QMessageBox.Yes:
+    def _save(self):
+        company_name = self.company.text().strip()
+        project_name = self.project.text().strip()
+        well_name = self.well_name.text().strip()
+        if not (company_name and project_name and well_name):
+            QMessageBox.warning(self, "Validation", "Company, Project, Well Name اجباری است")
             return
-        with self.db.get_session() as s:
-            w = s.query(Well).get(wid)
-            if w: s.delete(w)
-        self._on_project_changed()
 
-class WellInfoModule(BaseModule):
-    DISPLAY_NAME = "Well Info"
-    def __init__(self, db, parent=None):
-        super().__init__(db, parent); self.widget = WellInfoWidget(self.db)
-    def get_widget(self): return self.widget
+        with session_scope(self.SessionLocal) as s:
+            comp = s.query(Company).filter(Company.name == company_name).one_or_none()
+            if not comp:
+                comp = Company(name=company_name)
+                s.add(comp); s.flush()
+            proj = s.query(Project).filter(Project.company_id == comp.id, Project.name == project_name).one_or_none()
+            if not proj:
+                proj = Project(company_id=comp.id, name=project_name)
+                s.add(proj); s.flush()
+            well = s.query(Well).filter(Well.project_id == proj.id, Well.name == well_name).one_or_none()
+            if not well:
+                well = Well(project_id=proj.id, name=well_name)
+                s.add(well)
+
+            # set fields
+            well.rig_name = self.rig_name.text().strip() or None
+            well.operator = self.operator.text().strip() or None
+            well.field_name = self.field.text().strip() or None
+            well.well_type = self.well_type.currentText() or None
+            well.rig_type = self.rig_type.currentText() or None
+            well.well_shape = self.well_shape.currentText() or None
+            well.derrick_height_ft = self.derrick_height.value() or None
+
+            well.gle = self.gle.value() or None; well.rte = self.rte.value() or None; well.msl = self.msl.value() or None
+            well.kop1 = self.kop1.value() or None; well.kop2 = self.kop2.value() or None
+
+            well.latitude = self.latitude.text().strip() or None
+            well.longitude = self.longitude.text().strip() or None
+            well.northing = self.northing.value() or None
+            well.easting = self.easting.value() or None
+
+            well.hole_size_in = self.hole_size.value() or None
+            well.est_final_depth_md_m = self.est_final_depth.value() or None
+            well.offshore_water_depth_m = self.offshore_water_depth.value() or None
+
+            well.spud_date = self.spud_date.date().toPython()
+            well.start_hole_date = self.start_hole_date.date().toPython()
+            well.rig_move_date = self.rig_move_date.date().toPython()
+
+            well.supervisor_day = self.supervisor_day.text().strip() or None
+            well.supervisor_night = self.supervisor_night.text().strip() or None
+            well.toolpusher_day = self.toolpusher_day.text().strip() or None
+            well.toolpusher_night = self.toolpusher_night.text().strip() or None
+            well.operation_manager = self.operation_manager.text().strip() or None
+            well.geologist1 = self.geologist1.text().strip() or None
+            well.geologist2 = self.geologist2.text().strip() or None
+            well.client_rep = self.client_rep.text().strip() or None
+            well.objectives = self.objectives.toPlainText().strip() or None
+
+        QMessageBox.information(self, "Saved", "Well Info ذخیره شد")
+
+def _combo(parent, items: list[str]):
+    cb = QComboBox(parent)
+    for it in items:
+        cb.addItem(it)
+    return cb
+
+def _row2(a: QWidget, b: QWidget):
+    w = QWidget()
+    lay = QVBoxLayout(w); lay.setContentsMargins(0,0,0,0)
+    lay.addWidget(a); lay.addWidget(b)
+    return w

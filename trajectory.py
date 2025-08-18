@@ -1,7 +1,7 @@
 ﻿# File: modules/trajectory.py
 # Purpose: Trip sheet / trajectory helper: simple calculator from surveys (cumulative MD/Inc/Azi)
 
-from PySide2.QtWidgets import QWidget, QVBoxLayout, QPushButton, QTextEdit, QComboBox, QMessageBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QTextEdit, QComboBox, QMessageBox
 from .base import BaseModule
 from models import Section, Survey
 
